@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import socket
+import ssl
+
+
+#Configure program parameters
+parser = argparse.ArgumentParser(description = "Client to play Wordle")
+
+parser.add_argument('-p', '--port', type = int, 
+	help = 'Specify TCP port the server is listening on (default = 27993)')
+parser.add_argument('-s', '--socket', action = 'store_true',
+	help = 'Use a TLS encrypted socket connection if flag is given')
+parser.add_argument('hostname', type = str, default = 'proj1.3700.network',
+	help = 'Name of the server (either DNS or IP address)')
+parser.add_argument('username', type = str, default = 'assouline.s', 
+	help = 'Northeastern username')
+
+args = parser.parse_args()
+
+PORT = args.port
+TLS = args.socket
+HOSTNAME = args.hostname
+USERNAME = args.username
+
+
+#Establish socket connection
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+if TLS and (PORT is None):
+	PORT = 27994
+	s = ssl.wrap_socket(s)
+elif TLS:
+	s = ssl.wrap_sockets(s)
+elif not TLS and (PORT is None):
+	PORT = 27993 
+s.connect((HOSTNAME, PORT))
+
+
+#Send HELLO message to get gameID from server
+hello = {"type": "hello", "northeastern_username": f'{USERNAME}'}
+hello = json.dumps(hello) + "\n"
+s.sendall(bytes(hello, 'UTF-8'))
+
+start = s.recv(1024)
+while not start.endswith(b'\n'):
+	start += s.recv(1024)
+start = start.decode('UTF-8')
+start = json.loads(start)
+GAMEID = start['id']
+
+
+#Guess secret word
+#Make first guess "adieu" to assess what vowels are in target word
+first_guess = {"type": "guess", "id": f'{GAMEID}', "word": "adieu"}
+first_guess = json.dumps(first_guess) + "\n"
+s.sendall(bytes(first_guess, 'UTF-8'))
+
+first_response = s.recv(1024)
+while not first_response.endswith(b'\n'):
+	first_response += s.recv(1024)
+first_response = first_response.decode('UTF-8')
+first_response = json.loads(first_response)
+
+#Maintain a list of letters that are not in target word
+not_in_word_list = []
+def not_in_word(guess, marks):
+	for x in range(0,5):
+		if (marks[x] == 0) and (guess.count(guess[x]) == 1):
+			not_in_word_list.append(guess[x])
+		elif (marks[x] == 0) and (guess.count(guess[x]) > 1):
+			letter = guess[x]
+			new_guess = guess[0:x] + guess[x+1:5]
+			new_marks = marks.copy()
+			new_marks.pop(x)
+			index = new_guess.index(letter)
+			if (new_marks[index] == 0):
+				not_in_word_list.append(new_guess[index])
+
+
+#Action if response type from server is not "retry"
+def not_retry(response):
+        if response["type"] == "bye":
+                s.close()
+                print(response["flag"])
+        elif response["type"] == "error":
+                s.close()
+                sys.exit(response["message"])
+
+
+#Iterate through dictionary and guess words that have no letters in the notInWordList
+if first_response["type"] == "retry":
+	not_in_word("adieu", first_response["guesses"][0]["marks"])
+	counter = 0
+	dictionary = open('project1-words.txt', 'r')
+	words = dictionary.readlines()
+	for word in words:
+		if all(w not in word for w in not_in_word_list):
+			guess = {"type": "guess", "id": f'{GAMEID}', "word": f'{word}'[0:5]}
+			guess = json.dumps(guess) + "\n"
+			s.sendall(bytes(guess, 'UTF-8'))
+			response = s.recv(1024)
+			while not response.endswith(b'\n'):
+				response += s.recv(1024)
+			response = response.decode('UTF-8')
+			response = json.loads(response)
+			if response["type"] == "retry":
+				counter += 1
+				not_in_word(word, response["guesses"][counter]["marks"])
+			else:
+				not_retry(response)
+				break
+else:
+	 not_retry(first_response)					
+
+
+#Close the socket
+s.close()
