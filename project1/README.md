@@ -1,6 +1,6 @@
 ## Project 1: Socket Basics
 
-###Approach and Strategy
+### Approach and Strategy
 
 ### Project 1: Socket Basics
 #### Step 1: Program Parameters
