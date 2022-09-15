@@ -30,9 +30,11 @@ USERNAME = args.username
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 if TLS and (PORT is None):
 	PORT = 27994
-	s = ssl.wrap_socket(s)
+	context = ssl.create_default_context()
+	s = context.wrap_socket(s, server_hostname = HOSTNAME)
 elif TLS:
-	s = ssl.wrap_sockets(s)
+	context = ssl.create_default_context()
+	s = context.wrap_sockets(s, server_hostname = HOSTNAME)
 elif not TLS and (PORT is None):
 	PORT = 27993 
 s.connect((HOSTNAME, PORT))
@@ -67,16 +69,23 @@ first_response = json.loads(first_response)
 not_in_word_list = []
 def not_in_word(guess, marks):
 	for x in range(0,5):
-		if (marks[x] == 0) and (guess.count(guess[x]) == 1):
+		if (marks[x] == 0) and (guess.count(guess[x]) == 1) and (guess[x] not in not_in_word_list):
 			not_in_word_list.append(guess[x])
-		elif (marks[x] == 0) and (guess.count(guess[x]) > 1):
+		elif (marks[x] == 0) and (guess.count(guess[x]) > 1) and (guess[x] not in not_in_word_list):
 			letter = guess[x]
 			new_guess = guess[0:x] + guess[x+1:5]
 			new_marks = marks.copy()
 			new_marks.pop(x)
 			index = new_guess.index(letter)
-			if (new_marks[index] == 0):
+			if (new_marks[index] == 0) and (new_guess.count(letter) == 0):
 				not_in_word_list.append(new_guess[index])
+			elif (new_marks[index] == 0) and (new_guess.count(letter) > 1):
+				new_guess2 = new_guess[0:index] + new_guess[index+1:5]
+				new_marks2 = new_marks.copy()
+				new_marks2.pop(index)
+				index2 = new_guess2.index(letter)
+				if (new_marks[index] == 0) and (new_guess.count(letter) == 0):
+                                	not_in_word_list.append(new_guess[index])
 
 
 #Action if response type from server is not "retry"
