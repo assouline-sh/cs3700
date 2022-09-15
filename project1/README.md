@@ -1,11 +1,8 @@
-<<<<<<< HEAD
-##Project 1: Socket Basics
+## Project 1: Socket Basics
 
 ###Approach and Strategy
-=======
-### Project 1: Socket Basics
 
->>>>>>> 97862271fbbbbc4a31639a80634d714988091565
+### Project 1: Socket Basics
 #### Step 1: Program Parameters
 My program first begins by configuring the program parameters such that a user can specify the TCP port the server is listening on, if they want to use a TLS encrypted socket connection, and the required hostname and username.
 
