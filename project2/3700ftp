@@ -156,7 +156,6 @@ def ls():
 def cp():
 	open_data_channel()
 	if TO_LOCAL:
-		print("RETR {}\r\n".format(PATH.split("/")[-1]))
 		response = send("RETR {}\r\n".format(PATH))
 		print(response)
 		if not re.search("[1][0-9][0-9]", response):
