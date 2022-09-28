@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import re
+import socket
+import sys
+from urllib.parse import urlparse
+
+# Configure program parameters and parse incoming user inputs
+parser = argparse.ArgumentParser(description = "FTP client")
+
+parser.add_argument('operation', type = str,
+	help = 'The operation to execute. Valid operations are \'ls\', \'rm\', \'rmdir\', \'mkdir\', \'cp\', and \'mv\'')
+parser.add_argument('param1', type = str, 
+	help = 'Parameters for the given operation. Will be one or two paths and/or URLs.')
+parser.add_argument('param2', type = str, nargs='?', default = None,
+	help = 'Parameters for the given operation. Will be one or two paths and/or URLs.')
+
+args = parser.parse_args()
+
+## Parse given URL into its components of username, password, hostname, path, and port
+def parse_input(PARAM):
+        global USER
+        global PASS
+        global HOST
+        global PATH
+        global PORT
+        USER = PARAM.username
+        if USER is None:
+                USER = "anonymous"
+        PASS = PARAM.password
+        if PASS is None:
+                PASS = ""
+        HOST = PARAM.hostname
+        PATH = PARAM.path
+        if (HOST is None) or (PATH is None):
+                sys.exit("Error: Not given a host and/or path in FTP URL")
+        PORT = PARAM.port
+        if PORT is None:
+                PORT = 21
+
+## Parse given FTP URL
+OPERATION = args.operation
+if args.param1[0:3] == "ftp":
+	PARAM1 = urlparse(args.param1)
+	parse_input(PARAM1)
+	TO_LOCAL = False
+	if not(args.param2 is None):
+		PARAM2 = args.param2
+		TO_LOCAL = True
+elif args.param2[0:3] == "ftp":
+	PARAM1 = args.param1
+	PARAM2 = urlparse(args.param2)
+	parse_input(PARAM2)
+	TO_LOCAL = False
+else:
+	sys.exit("Error: Issue parsing input")
+
+
+
+
+# Connect and log in to the FTP server, and enable connection to socket and data channel
+## Open control channel socket to the FTP server
+control = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+control.connect((HOST, PORT))
+control_response = (control.recv(1024)).decode('UTF-8')
+print(control_response)
+
+## Send and receive a message from the server over the control channel
+def send(message):
+	control.sendall(bytes(message, 'UTF-8'))
+	response = ""
+	while("\r\n" not in response):
+		response += (control.recv(1024)).decode('UTF-8')
+	return response
+
+## Log in to FTP server
+user_response = send("USER {}\r\n".format(USER))
+print(user_response)
+if not re.search("[3][0-9][0-9]", user_response):
+	sys.exit("Error: Username issue during FTP server login attempt")
+
+pass_response = send("PASS {}\r\n".format(PASS))
+print(pass_response)
+if not re.search("[2][0-9][0-9]", pass_response):
+	sys.exit("Error: Password issue during FTP server login attempt")
+
+## Open the data channel to upload or download data
+def open_data_channel():
+	channel = send("PASV\r\n")
+	print("CHANNEL: " + channel)
+	if not re.search("[2][0-9][0-9]", channel):
+		sys.exit("Error opening a data channel")
+	
+	### Parse server response to open a data channel at the given ip address and port
+	channel = channel[channel.find("(")+1: channel.find(")")]
+	channel = channel.split(",")
+	channel = [int(i) for i in channel]
+	IP = ".".join([str(i) for i in channel[:4]])
+	DATA_PORT = (channel[-2] << 8) + channel[-1]
+	global data
+	data = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	data.connect((IP, DATA_PORT))
+
+	### Set 8-bit binary data mode, stream mode, and file-oriented mode
+	type_response = send("TYPE I\r\n")
+	print(type_response)
+	if not re.search("[2][0-9][0-9]", type_response):
+		sys.exit("Error setting connection to 8-bit binary data mode")
+	
+	mode_response = send("MODE S\r\n")
+	print(mode_response)
+	if not re.search("[2][0-9][0-9]", mode_response):
+		sys.exit("Error setting connection to stream mode")
+
+	stru_response = send("STRU F\r\n")
+	print(stru_response)
+	if not re.search("[2][0-9][0-9]", stru_response):
+		sys.exit("Error setting connection to file-oriented mode")
+
+
+
+
+# Perform operation given by user
+## Functions for each possible operation
+def mkdir():
+	response = send("MKD {}\r\n".format(PATH))
+	print(response)
+	if not re.search("[2][0-9][0-9]", response):
+		sys.exit("Error: Issue creating directory")
+
+def rmdir():
+	response = send("RMD {}\r\n".format(PATH))
+	print(response)
+	if not re.search("[2][0-9][0-9]", response):
+		sys.exit("Error: Issue deleting directory")
+
+def rm(file):
+	print(file)
+	response = send("DELE {}\r\n".format(file))
+	print(response)
+	if not re.search("[2][0-9][0-9]", response):
+		sys.exit("Error: Issue deleting the given file")
+
+def ls():
+	open_data_channel()
+	response = send("LIST {}\r\n".format(PATH))
+	print(response)
+	if not re.search("[1][0-9][0-9]", response):
+		sys.exit("Error: Issue listing contents in given directory")
+	response_ls = (data.recv(1024)).decode('UTF-8')
+	data.close()
+	print(response_ls)
+
+def cp():
+	open_data_channel()
+	if TO_LOCAL:
+		print("RETR {}\r\n".format(PATH.split("/")[-1]))
+		response = send("RETR {}\r\n".format(PATH))
+		print(response)
+		if not re.search("[1][0-9][0-9]", response):
+			sys.exit("Error: Issue copying file from server")
+		file = open(PARAM2, 'wb')
+		file_data = data.recv(8192)
+		file.write(file_data)
+		while (file_data):
+			file_data = data.recv(8192)
+			file.write(file_data)
+		data.close()
+	else:
+		remote_path = PATH.split("/")[:-1]
+		remote_path = '/'.join(remote_path)
+		cwd = send("CWD {}\r\n".format(remote_path))
+		local_path = PARAM1.split("/")[:-1]
+		local_path = '/'.join(local_path)
+		os.chdir(local_path)
+		response = send("STOR {}\r\n".format(PARAM1.split("/")[-1]))
+		print(response)
+		if not re.search("[1][0-9][0-9]", response):
+			sys.exit("Error: Issue copying file to server")
+		file = open(PARAM1, 'rb')
+		file_data = file.read()
+		data.send(file_data)
+		data.close()
+def mv():
+	open_data_channel()
+	if TO_LOCAL:
+		cp()
+		rm(PATH)
+	else:
+		cp()
+		print(PARAM1)
+		if os.path.exists(PARAM1):
+			os.remove(PARAM1)
+
+## Call the according function per user input for operation
+if OPERATION == "mkdir":
+	mkdir()
+elif OPERATION == "rmdir":
+	rmdir()
+elif OPERATION == "rm":
+	rm(PATH)
+elif OPERATION == "ls":
+	ls()
+elif OPERATION == "cp":
+	cp()
+elif OPERATION == "mv":
+	mv()
+else:
+	sys.exit("Invalid operation given")
+
+
+
+# Close the connection to the FTP server
+close = send("QUIT\r\n")
+print(close)

@@ -1,0 +1,23 @@
+## Project 2: FTP Client
+
+### Approach and Strategy
+#### Step 1: Program Parameters
+My program first begins by configuring the program parameters such that a user can specify the command they want to run, and give the necessary input(s), whether it be a single FTP url or an FTP url and the path to a local file. My program then parses these inputs to extract the username, password, hostname, path to file, and port number. The host and path are required parameters, and the others will be replaced with defaults if not given. 
+
+#### Step 2: Connect to FTP Server
+With the given host and port number, my program then opens a control channel socket to the FTP server. After receiving a message of a successful connection, the username and password (if given) are sent to the server so the user may log in to their account. If any communication in this step is not successful, the program exits with an error message. 
+
+#### Step 3: Call Appropriate Command Function
+Each command is defined as its own function. Based on the given operation to perform, my program will call the appropriate function. 
+**mkdir**: Program sends the MKD command to the server with the given file path. **rmdir**: Program sends the RMD command to the server with the given file path. **rm**: Program sends DELE command to the server with the given file path. 
+**ls**: Program opens a data channel by sending PASV command to the server, parsing the response, and establishing a socket connection for the data channel with the given IP address and port number. 8-bit binary data mode, stream mode, and file-oriented mode is also all set with the respective commands of TYPE, MODE, and STRU, to enable uploading and downloading data. Opening the data channel and setting the modes is in a helper function called open_data_channel(). Finally, the program sends LIST command to the server with the given file path and returns the data received on the data channel from the server. **cp**: open_data_channel() function is called. If the file transfer is from the server to the local machine, the program sends RETR command to the server with the given file path. It then creates a file on the local machine at the given file path and writes the data it receives from the data channel into it. If the file transfer is from the local machine to the server, the program enters the appropriate directory on the local machine and on the server, and then sends the STOR command to the server with the given file name. It then creates a file on the server, reads the data from the local machine, and sends it to the file on the server over the data channel. **mv**: open_data_channel() function is called. It then calls the cp command and then removes the original file with the rm command.
+
+#### Step 4: Close Connection
+Finally, the connection is closed to the FTP server.
+
+
+### Challenges
+The major challenge I faced during this project was that my tests were running correctly locally, but not passing the tests on Gradescope. I tried multiple different ways of executing commands, all for them to still fail the auto-grader. I decided to map exactly what response was coming from which message I sent, and I realized that the responses I was receiving were one off, leading to my code incorrectly exiting with an error since the response did not match what I was expecting. I had forgotten to explicitly receive the response after connecting my control channel, and this caused all responses to be read as being one message off. I also faced some minor challenges in figuring out when data channel is used; for example, for the ls command I was expecting to receive a response from the control channel, but I learned that it was the data channel that would send the data of the listing. As I continued with the project, the division of labor between the control and data channel became more apparent. 
+
+### Testing
+I extensively tested possible use cases locally to test my program. I first tested that my program could parse the given input correctly. I tested that my program acted gracefully if given incorrect inputs, like a command that is not supported, or if given not enough inputs, like not including a host name in the FTP url. I then tested that each command worked as desired, for both the root directory and subdirectories. I created and deleted various directories in various locations, listed directories to check it was completed successfully, uploaded and downloaded various files in various locations, and ensured the content was still the same after being sent to the server and sent back. I also tested that my program exited gracefully if given files or directories that did not exist, or if it was not given the correct inputs to execute the command.
