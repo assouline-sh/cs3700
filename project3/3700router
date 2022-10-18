@@ -8,20 +8,15 @@ class Router:
 	relations = {}
 	sockets = {}
 	ports = {}
-	global forwarding_table, update_table, withdraw_table
+	global forwarding_table, update_table
 	forwarding_table = []
 	update_table = []
-	withdraw_table = []
-
 
 	# Open a socket for each given neighbor and send a handshake message
 	def __init__(self, asn, connections):
 		self.asn = asn
 		global neighbors, forwarding_table, update_table
 		neighbors = {}
-		#forwarding_table = []
-		#update_table = []
-		#withdraw_table = []
 		for relationship in connections:
 			port, neighbor, relation = relationship.split("-")
 			neighbors.update({neighbor: relation})
@@ -362,9 +357,6 @@ class Router:
 		# Parse fields in the received packet
 		SRC = packet["src"]
 		withdrawals = packet["msg"]
-
-		# Save a copy of the announcement
-		withdraw_table.append(packet)
 		
 		# Remove the dead entry from the forwarding table if the exact entry is present
 		removed = False
