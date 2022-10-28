@@ -23,7 +23,9 @@ class Sender:
 	def run(self):
 		WINDOW = 2
 		to_send = []
-		packets_sent = 0
+		packets_in_transit = 0
+		sequence_num = 0
+		sequences_sent = []
 		while True:
 			print("========== START OF FIRST WHILE LOOP ===================")
 			sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
@@ -40,8 +42,8 @@ class Sender:
 						for packet in to_send:
 							if (packet["data"] == msg["data"]):
 								to_send.remove(packet)
-								packets_sent -= 1
-					print("new packets_sent: " + str(packets_sent))
+								packets_in_transit -= 1
+					print("new packets_sent: " + str(packets_in_transit))
 					print("new to_send: " + str(to_send))
 					self.waiting = False
 
@@ -52,20 +54,27 @@ class Sender:
 						if len(data) == 0:
 							break;
 						else:
-							msg = {"type": "msg", "data": data}
+							msg = {"type": "msg", "data": data, "seq": sequence_num}
+							sequence_num += 1
 							to_send.append(msg)
-							#self.log("All done!")
-							#sys.exit(0)
+					
 					if (len(to_send) == 0):
 						self.log("All done!")
 						sys.exit(0)
+
 					print("******TO SEND********: " + str(to_send))
-					while (packets_sent < WINDOW and packets_sent < len(to_send)):
-						self.log("Sending message '%s'" % str(to_send[packets_sent])[-10:])
-						self.send(to_send[packets_sent])
-						packets_sent+=1
-						print("updated packets_sent: " + str(packets_sent))
-						self.waiting = True
+					while (packets_in_transit < WINDOW and packets_in_transit < len(to_send)):
+						if not(to_send[packets_in_transit]["seq"] in sequences_sent):
+							self.log("Sending message '%s'" % str(to_send[packets_in_transit])[-10:])
+							self.send(to_send[packets_in_transit])
+							sequences_sent.append(to_send[packets_in_transit]["seq"])
+							packets_in_transit += 1
+							print("updates sequences_sent: " + str(sequences_sent))
+							print("updated packets_in_transit: " + str(packets_in_transit))
+							self.waiting = True
+						else:
+							to_send.remove(to_send[packets_in_transit])
+						
 
 		return
 
