@@ -1,49 +1,73 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, time, json, select, struct, sys, math
+import argparse, socket, time, json, select, struct, sys, math, ast
 
 DATA_SIZE = 1375
 
 class Sender:
-    def __init__(self, host, port):
-        self.host = host
-        self.remote_port = int(port)
-        self.log("Sender starting up using port %s" % self.remote_port)
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind(('0.0.0.0', 0))
-        self.waiting = False
+	def __init__(self, host, port):
+		self.host = host
+		self.remote_port = int(port)
+		self.log("Sender starting up using port %s" % self.remote_port)
+		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		self.socket.bind(('0.0.0.0', 0))
+		self.waiting = False
 
-    def log(self, message):
-        sys.stderr.write(message + "\n")
-        sys.stderr.flush()
+	def log(self, message):
+		sys.stderr.write(message + "\n")
+		sys.stderr.flush()
 
-    def send(self, message):
-        self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
+	def send(self, message):
+		self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
 
-    def run(self):
-        while True:
-            sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
+	def run(self):
+		WINDOW = 2
+		to_send = []
+		packets_sent = 0
+		while True:
+			print("========== START OF FIRST WHILE LOOP ===================")
+			sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
+			socks = select.select(sockets, [], [], 0.1)[0]
+			for conn in socks:
+				print("========== FOR CONN: " + str(conn) + " IN SOCKS: " + str(socks) + "==========")
+				if conn == self.socket:
+					print("========== RECIEVING IF ==========")
+					k, addr = conn.recvfrom(65535)
+					msg = k.decode('utf-8')
+					msg = json.loads(msg)
+					self.log("Received message " + str(msg))
+					if (msg["type"] == "ack"):
+						for packet in to_send:
+							if (packet["data"] == msg["data"]):
+								to_send.remove(packet)
+								packets_sent -= 1
+					print("new packets_sent: " + str(packets_sent))
+					print("new to_send: " + str(to_send))
+					self.waiting = False
 
-            socks = select.select(sockets, [], [], 0.1)[0]
-            for conn in socks:
-                if conn == self.socket:
-                    k, addr = conn.recvfrom(65535)
-                    msg = k.decode('utf-8')
+				elif conn == sys.stdin:
+					print("========== SENDING IF ==========")
+					while True:
+						data = sys.stdin.read(DATA_SIZE)
+						if len(data) == 0:
+							break;
+						else:
+							msg = {"type": "msg", "data": data}
+							to_send.append(msg)
+							#self.log("All done!")
+							#sys.exit(0)
+					if (len(to_send) == 0):
+						self.log("All done!")
+						sys.exit(0)
+					print("******TO SEND********: " + str(to_send))
+					while (packets_sent < WINDOW and packets_sent < len(to_send)):
+						self.log("Sending message '%s'" % str(to_send[packets_sent])[-10:])
+						self.send(to_send[packets_sent])
+						packets_sent+=1
+						print("updated packets_sent: " + str(packets_sent))
+						self.waiting = True
 
-                    self.log("Received message '%s'" % msg)
-                    self.waiting = False
-                elif conn == sys.stdin:
-                    data = sys.stdin.read(DATA_SIZE)
-                    if len(data) == 0:
-                        self.log("All done!")
-                        sys.exit(0)
-
-                    msg = { "type": "msg", "data": data }
-                    self.log("Sending message '%s'" % msg)
-                    self.send(msg)
-                    self.waiting = True
-
-        return
+		return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='send data')

@@ -31,13 +31,13 @@ class Receiver:
                     self.remote_port = addr[1]
 
                 msg = json.loads(data.decode('utf-8'))
-                self.log("Received data message %s" % msg)
+                self.log("Received data message %s" % str(msg)[-5:])
 
                 # Print out the data to stdout
                 print(msg["data"], end='', flush=True)
 
                 # Always send back an ack
-                self.send({ "type": "ack" })
+                self.send({"type": "ack", "data": msg["data"]})
 
 
         return
