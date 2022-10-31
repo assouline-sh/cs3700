@@ -15,6 +15,8 @@ class Receiver:
 		self.remote_port = None
 		self.current_sequence = 0
 		self.buffer = {}
+		self.sequences_ack = []
+
 
 	# Send message to sender
 	def send(self, message):
@@ -27,9 +29,14 @@ class Receiver:
 		sys.stderr.flush()
 
 
+	# Send an ACK to sender for the given message
+	def send_ack(self, msg):
+		self.log("Received data message %s" % str(msg["seq"]))
+		self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
+
+
 	# Run the receiver
 	def run(self):
-		sequences_ack = []
 		while True:
 			socks = select.select([self.socket], [], [])[0]
 			for conn in socks:
@@ -40,40 +47,29 @@ class Receiver:
 					self.remote_port = addr[1]
 				msg = json.loads(data.decode('utf-8'))
 				
+				self.send_ack(msg)	
+				
 				# If received packet is not a duplicate (we have not seen the sequence number before)
-				if not(msg["seq"] in sequences_ack):
+				if not(msg["seq"] in self.sequences_ack):
+					self.sequences_ack.append(msg["seq"])	
 					# If this is the next packet in the sequence
-					if (msg["seq"] == current_sequence):
-#						self.log("NEXT PACKET IN SEQUENCE")
-						current_sequence += 1
-						sequences_ack.append(msg["seq"])
-						#self.log("Received data message %s" % str(msg["seq"]))
-
-						# Print out the data to stdout
+					if (msg["seq"] == self.current_sequence):
+						self.current_sequence += 1
 						print(msg["data"], end='', flush=True)
 
-						# Always send back an ack
-						self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
-						#self.log("SENT ACK OF SEQUENCE: " + str(msg["seq"]))
-						#self.log("current sequence after ack: " + str(current_sequence))
 						# Send messages in buffer that arrived before current packet out of order
-						if not(buffer is None) and (current_sequence in list(buffer.keys())):
+						if (not(self.buffer is None) and (self.current_sequence in list(self.buffer.keys()))):
 							# Sort the entries in the buffer
-							temporary_buffer = sorted(buffer)
-							buffer = {key:buffer[key] for key in temporary_buffer}
-							buffer_copy = buffer.copy()
+							temporary_buffer = sorted(self.buffer)
+							self.buffer = {key:self.buffer[key] for key in temporary_buffer}
+							buffer_copy = self.buffer.copy()
 							for seq, msg in buffer_copy.items():
-								if (seq == current_sequence):
-									buffer.pop(seq)
-									current_sequence += 1
-									sequences_ack.append(seq)
-									self.log("Received data message %s" % str(msg)[-5:])
+								if (seq == self.current_sequence):
+									self.buffer.pop(seq)
+									self.current_sequence += 1
 									print(msg["data"], end='', flush=True)
-									self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
 					else:
-						#self.log("APPENDING TO BUFFER")
-						buffer.update({msg["seq"]: msg})
-						#self.log("buffer: " + str(buffer))
+						self.buffer.update({msg["seq"]: msg})
 					continue
 						
 				else:
