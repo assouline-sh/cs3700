@@ -2,7 +2,9 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
+# Class for receiver
 class Receiver:
+	# Initialize connection and global variables
 	def __init__(self):
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket.bind(('0.0.0.0', 0))
@@ -11,36 +13,69 @@ class Receiver:
 
 		self.remote_host = None
 		self.remote_port = None
+		self.current_sequence = 0
+		self.buffer = {}
 
+	# Send message to sender
 	def send(self, message):
 		self.socket.sendto(json.dumps(message).encode('utf-8'), (self.remote_host, self.remote_port))
 
+
+	# Log message to stderr
 	def log(self, message):
 		sys.stderr.write(message + "\n")
 		sys.stderr.flush()
 
+
+	# Run the receiver
 	def run(self):
 		sequences_ack = []
 		while True:
 			socks = select.select([self.socket], [], [])[0]
 			for conn in socks:
 				data, addr = conn.recvfrom(65535)
-
 				# Grab the remote host/port if we don't alreadt have it
 				if self.remote_host is None:
 					self.remote_host = addr[0]
 					self.remote_port = addr[1]
-
 				msg = json.loads(data.decode('utf-8'))
+				
+				# If received packet is not a duplicate (we have not seen the sequence number before)
 				if not(msg["seq"] in sequences_ack):
-					sequences_ack.append(msg["seq"])
-					self.log("Received data message %s" % str(msg)[-5:])
+					# If this is the next packet in the sequence
+					if (msg["seq"] == current_sequence):
+#						self.log("NEXT PACKET IN SEQUENCE")
+						current_sequence += 1
+						sequences_ack.append(msg["seq"])
+						#self.log("Received data message %s" % str(msg["seq"]))
 
-					# Print out the data to stdout
-					print(msg["data"], end='', flush=True)
+						# Print out the data to stdout
+						print(msg["data"], end='', flush=True)
 
-					# Always send back an ack
-					self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
+						# Always send back an ack
+						self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
+						#self.log("SENT ACK OF SEQUENCE: " + str(msg["seq"]))
+						#self.log("current sequence after ack: " + str(current_sequence))
+						# Send messages in buffer that arrived before current packet out of order
+						if not(buffer is None) and (current_sequence in list(buffer.keys())):
+							# Sort the entries in the buffer
+							temporary_buffer = sorted(buffer)
+							buffer = {key:buffer[key] for key in temporary_buffer}
+							buffer_copy = buffer.copy()
+							for seq, msg in buffer_copy.items():
+								if (seq == current_sequence):
+									buffer.pop(seq)
+									current_sequence += 1
+									sequences_ack.append(seq)
+									self.log("Received data message %s" % str(msg)[-5:])
+									print(msg["data"], end='', flush=True)
+									self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
+					else:
+						#self.log("APPENDING TO BUFFER")
+						buffer.update({msg["seq"]: msg})
+						#self.log("buffer: " + str(buffer))
+					continue
+						
 				else:
 					continue
 

@@ -4,7 +4,9 @@ import argparse, socket, time, json, select, struct, sys, math, ast
 
 DATA_SIZE = 1375
 
+# Class for the sender
 class Sender:
+	# Initialize connection and global variables
 	def __init__(self, host, port):
 		self.host = host
 		self.remote_port = int(port)
@@ -12,70 +14,104 @@ class Sender:
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket.bind(('0.0.0.0', 0))
 		self.waiting = False
+		self.to_send = []
+		self.packets_in_transit = []
+		self.sequence_num = 0
+		self.sequences_sent = []
+		self.RTT = 1
+		self.WINDOW = 4
 
+
+	# Log the given message to stderr
 	def log(self, message):
 		sys.stderr.write(message + "\n")
 		sys.stderr.flush()
 
+
+	# Send the given message to receiver
 	def send(self, message):
 		self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
 
-	def run(self):
-		WINDOW = 2
-		to_send = []
-		packets_in_transit = 0
-		sequence_num = 0
-		sequences_sent = []
+
+	# Parse messages to send from standard input
+	def get_data(self):
 		while True:
-			print("========== START OF FIRST WHILE LOOP ===================")
+			data = sys.stdin.read(DATA_SIZE)
+			if len(data) == 0:
+				# Stop receiving input when there is no more data to read
+				break;
+			else:
+				# Format the message and append to to_send list
+				msg = {"type": "msg", "data": data, "seq": self.sequence_num, "timesent": 0}
+				self.sequence_num += 1
+				self.to_send.append(msg)
+
+
+	# Parse response from receiver
+	def response(self, k):
+		msg = k.decode('utf-8')
+		msg = json.loads(msg)
+		if (msg["type"] == "ack"):
+			self.log("Received ACK of Sequence: " + str(msg["seq"]))
+			temp_str = ""
+			# Remove received packet from list of packets_in_transit
+			for packet in self.packets_in_transit:
+				if (msg["seq"] == packet["seq"]):
+					self.packets_in_transit.remove(packet)
+				else:
+					temp_str += str(packet["seq"]) + ", "
+				self.log("UPDATED PACKETS_IN_TRANSIT AFTER ACK: " + str(temp_str))	
+		self.waiting = False
+
+		# If there are no packets left to send, exit
+		if (len(self.packets_in_transit) == 0):
+			self.log("All done!")
+			sys.exit(0)
+
+
+	# Resend packets if they have exceeded the RTT without an ACK (have been dropped)
+	def dropped(self):
+		for packet in self.packets_in_transit:
+			current = int(time.time())
+			if (current > packet["timesent"] + (self.RTT * 2)):
+				self.log("Resending Packet of Sequence: '%s'" % str(packet["seq"]))
+				packet["timesent"] = int(time.time())
+				self.send(packet)
+
+
+	# Send more packets if it does not exceed the window
+	def send_more(self):
+		while ((len(self.packets_in_transit) < self.WINDOW) and (len(self.to_send) >= 1)):
+			# If the packet is not a duplicate
+			if not(self.to_send[0]["seq"] in self.sequences_sent):
+				self.log("Sending Message of Sequence: '%s'" % str(self.to_send[0]["seq"]))
+				self.to_send[0]["timesent"] = int(time.time())	
+				self.send(self.to_send[0])
+				self.sequences_sent.append(self.to_send[0]["seq"])
+				self.packets_in_transit.append(self.to_send[0])
+				del self.to_send[0]
+			else:
+				self.to_send.remove(self.to_send[self.packets_in_transit])
+			self.waiting = True
+
+
+	def run(self):
+		# Get messages to be sent
+		self.get_data()
+		
+		while True:
 			sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
 			socks = select.select(sockets, [], [], 0.1)[0]
 			for conn in socks:
-				print("========== FOR CONN: " + str(conn) + " IN SOCKS: " + str(socks) + "==========")
+				# Receive data from receiver
 				if conn == self.socket:
-					print("========== RECIEVING IF ==========")
 					k, addr = conn.recvfrom(65535)
-					msg = k.decode('utf-8')
-					msg = json.loads(msg)
-					self.log("Received message " + str(msg))
-					if (msg["type"] == "ack"):
-						for packet in to_send:
-							if (packet["data"] == msg["data"]):
-								to_send.remove(packet)
-								packets_in_transit -= 1
-					print("new packets_sent: " + str(packets_in_transit))
-					print("new to_send: " + str(to_send))
-					self.waiting = False
+					self.response(k)
 
+				# Receive data from standard input
 				elif conn == sys.stdin:
-					print("========== SENDING IF ==========")
-					while True:
-						data = sys.stdin.read(DATA_SIZE)
-						if len(data) == 0:
-							break;
-						else:
-							msg = {"type": "msg", "data": data, "seq": sequence_num}
-							sequence_num += 1
-							to_send.append(msg)
-					
-					if (len(to_send) == 0):
-						self.log("All done!")
-						sys.exit(0)
-
-					print("******TO SEND********: " + str(to_send))
-					while (packets_in_transit < WINDOW and packets_in_transit < len(to_send)):
-						if not(to_send[packets_in_transit]["seq"] in sequences_sent):
-							self.log("Sending message '%s'" % str(to_send[packets_in_transit])[-10:])
-							self.send(to_send[packets_in_transit])
-							sequences_sent.append(to_send[packets_in_transit]["seq"])
-							packets_in_transit += 1
-							print("updates sequences_sent: " + str(sequences_sent))
-							print("updated packets_in_transit: " + str(packets_in_transit))
-							self.waiting = True
-						else:
-							to_send.remove(to_send[packets_in_transit])
-						
-
+					self.dropped()
+					self.send_more()
 		return
 
 if __name__ == "__main__":
