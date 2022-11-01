@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, time, json, select, struct, sys, math, ast
+import argparse, socket, time, json, select, struct, sys, math, ast, zlib
 
 DATA_SIZE = 1375
 
@@ -14,6 +14,7 @@ class Sender:
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket.bind(('0.0.0.0', 0))
 		self.waiting = False
+		self.all_msg = []
 		self.to_send = []
 		self.packets_in_transit = []
 		self.sequence_num = 0
@@ -42,16 +43,45 @@ class Sender:
 				break;
 			else:
 				# Format the message and append to to_send list
-				msg = {"type": "msg", "data": data, "seq": self.sequence_num, "timesent": 0}
+				msg = {"type": "msg", "data": data, "seq": self.sequence_num, "timesent": 0, "checksum": 0}
 				self.sequence_num += 1
+				checksum = json.dumps({"data": msg["data"]}).encode('utf-8')
+				msg["checksum"] = zlib.crc32(checksum)
 				self.to_send.append(msg)
+				self.all_msg.append(msg)
+				print("TO SEND: " + str(self.to_send))
+
+	# Check if the given received message is corrupt
+	def check_corrupt(self, msg):
+		for packet in self.all_msg:
+			if (msg["seq"] == packet["seq"]):
+				print("in corrupt, same sequence")
+				if (msg["type"] == "ack"):
+					print("in corrupt, ack as type")
+					if (msg["data"] == packet["data"]):
+						print("in corrupt, data is same")
+						return False
+			else:
+				continue
+		return True
 
 
 	# Parse response from receiver
 	def response(self, k):
 		msg = k.decode('utf-8')
-		msg = json.loads(msg)
-		if (msg["type"] == "ack"):
+		corrupt = False
+		try:
+			msg = json.loads(msg)
+		except:
+			corrupt = True
+		print("RECEIVED MESSAGE LOOKS LIKE: " + str(msg))
+		if (corrupt or self.check_corrupt(msg)):
+			self.log("Received corrupt ACK: " + str(msg["seq"]))
+			for packet in self.all_msg:
+				if (packet["seq"] == msg["seq"]):
+					packet["timesent"] = int(time.time())
+					self.send(packet)
+		else:
 			self.log("Received ACK of Sequence: " + str(msg["seq"]))
 			temp_str = ""
 			# Remove received packet from list of packets_in_transit
@@ -76,6 +106,8 @@ class Sender:
 			if (current > packet["timesent"] + (self.RTT * 2)):
 				self.log("Resending Packet of Sequence: '%s'" % str(packet["seq"]))
 				packet["timesent"] = int(time.time())
+				checksum = json.dumps({"data": packet["data"]}).encode('utf-8')
+				packet["checksum"] = zlib.crc32(checksum)
 				self.send(packet)
 
 
@@ -85,7 +117,7 @@ class Sender:
 			# If the packet is not a duplicate
 			if not(self.to_send[0]["seq"] in self.sequences_sent):
 				self.log("Sending Message of Sequence: '%s'" % str(self.to_send[0]["seq"]))
-				self.to_send[0]["timesent"] = int(time.time())	
+				self.to_send[0]["timesent"] = int(time.time())
 				self.send(self.to_send[0])
 				self.sequences_sent.append(self.to_send[0]["seq"])
 				self.packets_in_transit.append(self.to_send[0])

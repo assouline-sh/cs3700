@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python3 -u
 
-import argparse, socket, time, json, select, struct, sys, math
+import argparse, socket, time, json, select, struct, sys, math, zlib
 
 # Class for receiver
 class Receiver:
@@ -35,6 +35,21 @@ class Receiver:
 		self.send({"type": "ack", "data": msg["data"], "seq": msg["seq"]})
 
 
+	# Check if the received message is corrupt
+	def check_corrupt(self, msg):
+		self.log("THIS IS WHAT MSG LOOKS LIKE: " + str(msg))
+		if (msg["type"] == "msg"):
+			if ("data" in list(msg.keys())):
+				self.log("IN CORRUPT, MESSAGE TYPE IS DATA")
+				check_checksum = json.dumps({"data": msg["data"]}).encode('utf-8')
+				check_checksum = zlib.crc32(check_checksum)
+				self.log("*******NEW GENERATED CHECKSUM*********" + str(check_checksum))
+				if (msg["checksum"] == check_checksum):
+					self.log("IN CORRUPT, CHECKSUMS ARE THE SAME")
+					return False
+		return True
+
+
 	# Run the receiver
 	def run(self):
 		while True:
@@ -45,35 +60,41 @@ class Receiver:
 				if self.remote_host is None:
 					self.remote_host = addr[0]
 					self.remote_port = addr[1]
-				msg = json.loads(data.decode('utf-8'))
-				
-				self.send_ack(msg)	
-				
-				# If received packet is not a duplicate (we have not seen the sequence number before)
-				if not(msg["seq"] in self.sequences_ack):
-					self.sequences_ack.append(msg["seq"])	
-					# If this is the next packet in the sequence
-					if (msg["seq"] == self.current_sequence):
-						self.current_sequence += 1
-						print(msg["data"], end='', flush=True)
-
-						# Send messages in buffer that arrived before current packet out of order
-						if (not(self.buffer is None) and (self.current_sequence in list(self.buffer.keys()))):
-							# Sort the entries in the buffer
-							temporary_buffer = sorted(self.buffer)
-							self.buffer = {key:self.buffer[key] for key in temporary_buffer}
-							buffer_copy = self.buffer.copy()
-							for seq, msg in buffer_copy.items():
-								if (seq == self.current_sequence):
-									self.buffer.pop(seq)
-									self.current_sequence += 1
-									print(msg["data"], end='', flush=True)
-					else:
-						self.buffer.update({msg["seq"]: msg})
-					continue
-						
+				corrupt = False
+				try:
+					msg = json.loads(data.decode('utf-8'))
+				except:
+					corrupt = True
+				if (corrupt or self.check_corrupt(msg)):
+					self.log("Received corrupt ACK: " + str(msg["seq"]))
 				else:
-					continue
+					self.send_ack(msg)	
+				
+					# If received packet is not a duplicate (we have not seen the sequence number before)
+					if not(msg["seq"] in self.sequences_ack):
+						self.sequences_ack.append(msg["seq"])	
+						# If this is the next packet in the sequence
+						if (msg["seq"] == self.current_sequence):
+							self.current_sequence += 1
+							print(msg["data"], end='', flush=True)
+
+							# Send messages in buffer that arrived before current packet out of order
+							if (not(self.buffer is None) and (self.current_sequence in list(self.buffer.keys()))):
+								# Sort the entries in the buffer
+								temporary_buffer = sorted(self.buffer)
+								self.buffer = {key:self.buffer[key] for key in temporary_buffer}
+								buffer_copy = self.buffer.copy()
+								for seq, msg in buffer_copy.items():
+									if (seq == self.current_sequence):
+										self.buffer.pop(seq)
+										self.current_sequence += 1
+										print(msg["data"], end='', flush=True)
+						else:
+							self.buffer.update({msg["seq"]: msg})
+						continue
+							
+					else:
+						continue
 
 		return
 
