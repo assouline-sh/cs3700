@@ -20,7 +20,11 @@ class Sender:
 		self.sequence_num = 0
 		self.sequences_sent = []
 		self.RTT = 1
-		self.WINDOW = 4
+		self.RTT_alpha = 0.875
+		self.RTO = 2
+		self.window = 4
+		self.ssthresh = 16
+	
 
 
 	# Log the given message to stderr
@@ -42,25 +46,24 @@ class Sender:
 				# Stop receiving input when there is no more data to read
 				break;
 			else:
-				# Format the message and append to to_send list
+				# Format the message and append to to_send list, and keep a copy in all_msg list
 				msg = {"type": "msg", "data": data, "seq": self.sequence_num, "timesent": 0, "checksum": 0}
 				self.sequence_num += 1
 				checksum = json.dumps({"data": msg["data"]}).encode('utf-8')
 				msg["checksum"] = zlib.crc32(checksum)
 				self.to_send.append(msg)
 				self.all_msg.append(msg)
-				print("TO SEND: " + str(self.to_send))
+				self.log("ALL DATA TO SEND: " + str(self.to_send))
+
 
 	# Check if the given received message is corrupt
 	def check_corrupt(self, msg):
 		for packet in self.all_msg:
-			if (msg["seq"] == packet["seq"]):
-				print("in corrupt, same sequence")
-				if (msg["type"] == "ack"):
-					print("in corrupt, ack as type")
-					if (msg["data"] == packet["data"]):
-						print("in corrupt, data is same")
-						return False
+			if (("seq" in list(msg.keys())) and ("type" in list(msg.keys())) and ("data" in list(msg.keys()))):
+				if (msg["seq"] == packet["seq"]):
+					if (msg["type"] == "ack"):
+						if (msg["data"] == packet["data"]):
+							return False
 			else:
 				continue
 		return True
@@ -74,23 +77,37 @@ class Sender:
 			msg = json.loads(msg)
 		except:
 			corrupt = True
-		print("RECEIVED MESSAGE LOOKS LIKE: " + str(msg))
+		# If message was corrupt resend the packet
 		if (corrupt or self.check_corrupt(msg)):
-			self.log("Received corrupt ACK: " + str(msg["seq"]))
+			self.log("RECIEVED CORRUPT ACK OF SEQUENCE: " + str(msg["seq"]))
 			for packet in self.all_msg:
 				if (packet["seq"] == msg["seq"]):
-					packet["timesent"] = int(time.time())
+					packet["timesent"] = time.time()
+					self.log("RESENDING CORRUPT PACKET OF SEQUENCE: " + str(msg["seq"]))
 					self.send(packet)
 		else:
-			self.log("Received ACK of Sequence: " + str(msg["seq"]))
-			temp_str = ""
+			self.log("RECIEVED ACK OF SEQUENCE: " + str(msg["seq"]))
 			# Remove received packet from list of packets_in_transit
 			for packet in self.packets_in_transit:
 				if (msg["seq"] == packet["seq"]):
+					# Calculate new RTT and RTO
+					new_sample = time.time() - packet["timesent"]
+					new_RTT = (self.RTT_alpha * (self.RTT / 1000)) + ((1 - self.RTT_alpha) * new_sample / 1000)
+					self.RTT = self.RTT - new_RTT
+					self.RTO = self.RTT * 2
+					self.log("CALCULATED NEW RTT TO BE: " + str(self.RTT) + " AND NEW RTO TO BE: " + str(self.RTO))
+					self.window += 1
+
+					# Adjust window size
+					#if (self.window < self.ssthresh):
+						# slow start implementation
+					#	self.window += 1
+					#else:
+						# congestion avoidance implementation
+						#self.window = int((self.window + 1) / self.window)
+					self.log("READJUSTED WINDOW TO BE OF SIZE: " + str(self.window))
+						
 					self.packets_in_transit.remove(packet)
-				else:
-					temp_str += str(packet["seq"]) + ", "
-				self.log("UPDATED PACKETS_IN_TRANSIT AFTER ACK: " + str(temp_str))	
 		self.waiting = False
 
 		# If there are no packets left to send, exit
@@ -102,22 +119,29 @@ class Sender:
 	# Resend packets if they have exceeded the RTT without an ACK (have been dropped)
 	def dropped(self):
 		for packet in self.packets_in_transit:
-			current = int(time.time())
-			if (current > packet["timesent"] + (self.RTT * 2)):
-				self.log("Resending Packet of Sequence: '%s'" % str(packet["seq"]))
-				packet["timesent"] = int(time.time())
+			current = time.time()
+			# If the packet has exceeded RTO
+			if (current > packet["timesent"] + self.RTO):
+				# Multiplicative decrease for congestion
+				#self.ssthresh = math.ceil(self.window / 2)
+				self.window = math.ceil(self.window / 2)
+				self.log("READJUSTED WINDOW TO BE SIZE: " + str(self.window) + " AND NEW SSTHRESH TO BE: " + str(self.ssthresh))
+
+				# Resend the packet
+				packet["timesent"] = time.time()
 				checksum = json.dumps({"data": packet["data"]}).encode('utf-8')
 				packet["checksum"] = zlib.crc32(checksum)
+				self.log("PACKET EXCEEDED RTO, RESENDING PACKET OF SEQUENCE: " +  str(packet["seq"]))
 				self.send(packet)
 
 
 	# Send more packets if it does not exceed the window
 	def send_more(self):
-		while ((len(self.packets_in_transit) < self.WINDOW) and (len(self.to_send) >= 1)):
+		while ((len(self.packets_in_transit) < self.window) and (len(self.to_send) >= 1)):
 			# If the packet is not a duplicate
 			if not(self.to_send[0]["seq"] in self.sequences_sent):
-				self.log("Sending Message of Sequence: '%s'" % str(self.to_send[0]["seq"]))
-				self.to_send[0]["timesent"] = int(time.time())
+				self.log("SENDING MESSAGE OF SEQUENCE: " + str(self.to_send[0]["seq"]))
+				self.to_send[0]["timesent"] = time.time()
 				self.send(self.to_send[0])
 				self.sequences_sent.append(self.to_send[0]["seq"])
 				self.packets_in_transit.append(self.to_send[0])
@@ -128,7 +152,7 @@ class Sender:
 
 
 	def run(self):
-		# Get messages to be sent
+		# Get all messages to be sent
 		self.get_data()
 		
 		while True:

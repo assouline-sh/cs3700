@@ -38,8 +38,8 @@ class Receiver:
 	# Check if the received message is corrupt
 	def check_corrupt(self, msg):
 		self.log("THIS IS WHAT MSG LOOKS LIKE: " + str(msg))
-		if (msg["type"] == "msg"):
-			if ("data" in list(msg.keys())):
+		if (("type" in list(msg.keys())) and ("data" in list(msg.keys())) and ("checksum" in list(msg.keys()))):
+			if (msg["type"] == "msg"):
 				self.log("IN CORRUPT, MESSAGE TYPE IS DATA")
 				check_checksum = json.dumps({"data": msg["data"]}).encode('utf-8')
 				check_checksum = zlib.crc32(check_checksum)
@@ -66,7 +66,7 @@ class Receiver:
 				except:
 					corrupt = True
 				if (corrupt or self.check_corrupt(msg)):
-					self.log("Received corrupt ACK: " + str(msg["seq"]))
+					self.log("RECEIVED CORRUPT ACK: " + str(msg["seq"]))
 				else:
 					self.send_ack(msg)	
 				
