@@ -23,8 +23,6 @@ class Sender:
 		self.RTT_alpha = 0.875
 		self.RTO = 2
 		self.window = 4
-		self.ssthresh = 16
-	
 
 
 	# Log the given message to stderr
@@ -96,15 +94,8 @@ class Sender:
 					self.RTT = self.RTT - new_RTT
 					self.RTO = self.RTT * 2
 					self.log("CALCULATED NEW RTT TO BE: " + str(self.RTT) + " AND NEW RTO TO BE: " + str(self.RTO))
-					self.window += 1
-
 					# Adjust window size
-					#if (self.window < self.ssthresh):
-						# slow start implementation
-					#	self.window += 1
-					#else:
-						# congestion avoidance implementation
-						#self.window = int((self.window + 1) / self.window)
+					self.window += 1
 					self.log("READJUSTED WINDOW TO BE OF SIZE: " + str(self.window))
 						
 					self.packets_in_transit.remove(packet)
@@ -122,10 +113,9 @@ class Sender:
 			current = time.time()
 			# If the packet has exceeded RTO
 			if (current > packet["timesent"] + self.RTO):
-				# Multiplicative decrease for congestion
-				#self.ssthresh = math.ceil(self.window / 2)
+				# Decrease window for congestion
 				self.window = math.ceil(self.window / 2)
-				self.log("READJUSTED WINDOW TO BE SIZE: " + str(self.window) + " AND NEW SSTHRESH TO BE: " + str(self.ssthresh))
+				self.log("READJUSTED WINDOW TO BE SIZE: " + str(self.window))
 
 				# Resend the packet
 				packet["timesent"] = time.time()
