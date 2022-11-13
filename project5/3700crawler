@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 
-import argparse, socket, select, ssl, html, html.parser
+import argparse, socket, select, ssl, html, html.parser, re
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 DEFAULT_SERVER = "proj5.3700.network"
 DEFAULT_PORT = 443
-SESSION_COOKIE = ""
+csrf_middleware_token = ""
+csrf_token = ""
+sessionid = ""
+
 FLAGS = []
 
 class Parser(HTMLParser):
+	print("in parser")
 	def handle_starttag(self, tag, attrs):
 		print("TAG: " + str(tag))
-		print("ATTRS: " + str(ATTRS))
+		print("ATTRS: " + str(attrs))
+		attrs = dict(attrs)
+		if ('name' in attrs) and (attrs['name'] == 'csrfmiddlewaretoken'):
+			csrf_middleware_token = attrs['value']
+			print(csrf_middleware_token)
 
 	def handle_data(self, data):
 		# When all flags are found, print them out and exit the program
@@ -58,12 +66,23 @@ class Crawler:
 
 	# Use HTTP POST request to log in to Fakebook with provided credentials
 	def login(self):
+		# Get Fakebook login page and receive response from site
 		login_url = urlparse("https://" + str(self.server) + ":" + str(self.port) + "/accounts/login/?next=/fakebook/")
 		request = "GET " + login_url.path + " HTTP/1.1\n" + "Host: " + login_url.hostname + "\n\n" 
 		self.socket.send(request.encode('utf-8'))
 		response = self.socket.recv(65535).decode('utf-8') #receive_response(request)
 		print("GET RESPONSE: \n" + str(response))
 
+		# Parse the HTML response to find the csrf middleware token
+		parser = Parser()
+		parser.feed(response)
+		print("fed response to parser")
+
+		# Get the csrf token and sessionid
+		csrf_token = re.search('csrftoken=(.*); expires', response).group(1)
+		sessionid = re.search('sessionid=(.*); expires', response).group(1)
+		print("CSRF TOKEN: " + csrf_token)
+		print("SESSION ID: " + sessionid)
 
 	def run(self):
 		# Establish socket connection
