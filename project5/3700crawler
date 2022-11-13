@@ -79,16 +79,13 @@ class Crawler:
 		parser = Parser()
 		parser.feed(get_response)
 		global csrf_middleware_token
-		print("MIDDLEWARE: " + csrf_middleware_token)		
+		
 		# POST HTML request to log in to the Fakebook site with given username and password
-		content = "username=" + self.username + "&password=" + self.password + "&csrfmiddlewaretoken=" + csrf_middleware_token #+ "&next=/fakebook/"
+		content = "username=" + self.username + "&password=" + self.password + "&csrfmiddlewaretoken=" + csrf_middleware_token
 		post_request = "POST " + login_url.path + " HTTP/1.1\nHost: " + login_url.hostname + "\n"
-		post_request += "Cookie: csrftoken=" + csrf_token + "\n"
-		post_request += "Content-Type: application/x-www-form-urlencoded\nContent-Length: " + str(len(content)) + "\n"
-		#post_request += "Cookie: csrftoken=" + csrf_token + "; sessionid=" + sessionid + "\n"
-		#post_request += "Referer: " + login_url.geturl() + "username=" + self.username +
-		post_request += "\n" + content + "\n\n"
-		#username=" + self.username + "&password=" + self.password + "&csrfmiddlewaretoken=" + csrf_middleware_token + "&next=\n\n" 
+		post_request += "Content-Length: " + str(len(content)) + "\nContent-Type: application/x-www-form-urlencoded\n"
+		post_request += "Cookie: csrftoken=" + csrf_token + "; sessionid=" + sessionid + "\n"
+		post_request += "Referer: " + login_url.geturl() + "username=" + self.username + "\n\n" + content + "\n\n"
 		print("POST REQUEST: " + post_request)
 		self.socket.send(post_request.encode('utf-8'))
 		print("REACHED BEFORE RECEIVING POST")
