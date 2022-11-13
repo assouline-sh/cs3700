@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+
+import argparse, socket, select, ssl, html, html.parser
+from html.parser import HTMLParser
+from urllib.parse import urlparse
+
+DEFAULT_SERVER = "proj5.3700.network"
+DEFAULT_PORT = 443
+SESSION_COOKIE = ""
+FLAGS = []
+
+class Parser(HTMLParser):
+	def handle_starttag(self, tag, attrs):
+		print("TAG: " + str(tag))
+		print("ATTRS: " + str(ATTRS))
+
+	def handle_data(self, data):
+		# When all flags are found, print them out and exit the program
+		if (len(FLAGS) == 5):
+			for flag in FLAGS:
+				print(flag)
+			exit(0)
+
+class Crawler:
+	# Initialize variables for the server and port to connect to, and the username and password to use 
+	def __init__(self, args):
+		if (args.server is None):
+			self.server = DEFAULT_SERVER
+		else:
+			self.server = args.server
+		if (args.port is None):
+			self.port = DEFAULT_PORT
+		else:
+			self.port = args.port
+		self.username = args.username
+		self.password = args.password
+
+
+	# Establish a TCP socket connection wrapped in TLS
+	def socket(self):
+		mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		mysocket.connect((self.server, self.port))
+		context = ssl.create_default_context()
+		mysocket = context.wrap_socket(mysocket, server_hostname = self.server)
+		return mysocket
+
+
+	# Receive response from the server, reconstructing data that arrives in chunks
+	def receive_response(self, request):
+		response = ""
+		try:
+			data = self.socket.recv(65535).decode('utf-8')
+			print("MSG: " + str(data))
+		except:
+			self.socket.send(request.encode('ascii'))
+		return data;
+
+
+	# Use HTTP POST request to log in to Fakebook with provided credentials
+	def login(self):
+		login_url = urlparse("https://" + str(self.server) + ":" + str(self.port) + "/accounts/login/?next=/fakebook/")
+		request = "GET " + login_url.path + " HTTP/1.1\n" + "Host: " + login_url.hostname + "\n\n" 
+		self.socket.send(request.encode('utf-8'))
+		response = self.socket.recv(65535).decode('utf-8') #receive_response(request)
+		print("GET RESPONSE: \n" + str(response))
+
+
+	def run(self):
+		# Establish socket connection
+		self.socket = self.socket()
+		self.login()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
