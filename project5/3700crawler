@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import argparse, socket, select, ssl, html, html.parser, re
+import argparse, socket, select, ssl, html, html.parser, re, sys
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -9,23 +9,34 @@ DEFAULT_PORT = 443
 csrf_middleware_token = ""
 csrf_token = ""
 sessionid = ""
-
-FLAGS = []
+frontier = []
+crawled = []
+flags = []
 
 class Parser(HTMLParser):
+	print("in parser")
 	def handle_starttag(self, tag, attrs):
-		global csrf_middleware_token
+		global csrf_middleware_token, frontier
+		print("TAG: " + str(tag))
+		print("ATTRS: " + str(attrs))
 		attrs = dict(attrs)
-		if ('name' in attrs) and (attrs['name'] == 'csrfmiddlewaretoken'):
-			csrf_middleware_token = attrs['value']
-			print("CSRF MIDDLEWARE TOKEN: " + csrf_middleware_token)
-			return
+		if (csrf_middleware_token == ""):
+			if ('name' in attrs) and (attrs['name'] == 'csrfmiddlewaretoken'):
+				csrf_middleware_token = attrs['value']
+				return
+		else:
+			if (tag == 'a') and ('href' in attrs) and (attrs['href'] not in crawled) and ('facebook' in attrs['href']):
+				frontier.append(attrs['href'])
+ 
 	def handle_data(self, data):
-		# When all flags are found, print them out and exit the program
-		if (len(FLAGS) == 5):
-			for flag in FLAGS:
-				print(flag)
-			exit(0)
+		global flags
+		if ('FLAG' in data):
+			flags.append(re.search('FLAG: (.*)', data).group(1))
+			# When all flags are found, print them out and exit the program
+			if (len(flags) == 5):
+				for flag in flags:
+					print(flag)
+					exit(0)
 
 class Crawler:
 	# Initialize variables for the server and port to connect to, and the username and password to use 
@@ -50,26 +61,45 @@ class Crawler:
 		mysocket = context.wrap_socket(mysocket, server_hostname = self.server)
 		return mysocket
 
+	def log(self, message):
+		sys.stderr.write(message + "\n")
+		sys.stderr.flush()
 
-	# Receive response from the server, reconstructing data that arrives in chunks
-	def receive_response(self, request):
-		response = ""
-		try:
-			data = self.socket.recv(65535).decode('utf-8')
-			print("MSG: " + str(data))
-		except:
-			self.socket.send(request.encode('ascii'))
-		return data;
+
+	# Craft and send GET HTML request for given webpage
+	def get_request(self, url, csrf_token, sessionid):
+		get_request = "GET " + url + " HTTP/1.1\nHost: " + self.server
+		if (csrf_token):
+			get_request += "\nCookie: csrftoken=" + csrf_token + "; sessionid=" +  sessionid + "\n\n"
+		else:
+			get_request += "\n\n"
+		self.socket.send(get_request.encode('utf-8'))
+		get_response = self.socket.recv(65535).decode('utf-8')
+		print("GET REQUEST: \n" + str(get_request))
+		print("GET RESPONSE: \n" + str(get_response))
+		return get_response
+
+
+	# Craft and send POST HTML request for given webpage
+	def post_request(self, path, csrf_middleware_token, csrf_token, sessionid):
+		content = "username=" + self.username + "&password=" + self.password + "&csrfmiddlewaretoken=" + csrf_middleware_token + "&next=/fakebook/"
+		post_request = "POST " + path + " HTTP/1.1\nHost: " + self.server + "\nContent-Length: " + str(len(content)) + "\nContent-Type: application/x-www-form-urlencoded\nCookie: csrftoken=" + csrf_token + "\n\n" + content + "\n\n"
+		self.socket.send(post_request.encode('utf-8'))
+		post_response = self.socket.recv(65535).decode('utf-8')
+		print("POST REQUEST: " + post_request)
+		print("POST RESPONSE: \n" + str(post_response))
+		return post_response
 
 
 	# Use HTTP POST request to log in to Fakebook with provided credentials
 	def login(self):
 		# GET HTML request the Fakebook login page and receive response from site
-		login_url = urlparse("https://" + str(self.server) + ":" + str(self.port) + "/accounts/login/?next=/fakebook/")
-		get_request = "GET " + login_url.path + " HTTP/1.1\nHost: " + login_url.hostname + "\n\n" 
-		self.socket.send(get_request.encode('utf-8'))
-		get_response = self.socket.recv(65535).decode('utf-8')
-		print("GET RESPONSE: \n" + str(get_response))
+		get_response = self.get_request("/accounts/login/?next=/fakebook/", "", "")
+		##"GET /accounts/login/?next=/fakebook/ HTTP/1.1\nHost: " + self.server + "\n\n" 
+		#self.socket.send(get_request.encode('utf-8'))
+		#get_response = self.socket.recv(65535).decode('utf-8')
+		#print("GET REQUEST: \n" + str(get_request))
+		#print("GET RESPONSE: \n" + str(get_response))
 
 		# Get the csrf token and sessionid
 		csrf_token = re.search('csrftoken=(.*); expires', get_response).group(1)
@@ -78,19 +108,42 @@ class Crawler:
 		# Parse the HTML response to find the csrf middleware token
 		parser = Parser()
 		parser.feed(get_response)
-		global csrf_middleware_token
+		global csrf_middleware_token, frontier, flags
 		
 		# POST HTML request to log in to the Fakebook site with given username and password
-		content = "username=" + self.username + "&password=" + self.password + "&csrfmiddlewaretoken=" + csrf_middleware_token
-		post_request = "POST " + login_url.path + " HTTP/1.1\nHost: " + login_url.hostname + "\n"
-		post_request += "Content-Length: " + str(len(content)) + "\nContent-Type: application/x-www-form-urlencoded\n"
-		post_request += "Cookie: csrftoken=" + csrf_token + "; sessionid=" + sessionid + "\n"
-		post_request += "Referer: " + login_url.geturl() + "username=" + self.username + "\n\n" + content + "\n\n"
-		print("POST REQUEST: " + post_request)
-		self.socket.send(post_request.encode('utf-8'))
-		print("REACHED BEFORE RECEIVING POST")
-		post_response = self.socket.recv(65535).decode('utf-8')
-		print("POST RESPONSE: \n" + str(post_response))
+		post_response = self.post_request("/accounts/login/", csrf_middleware_token, csrf_middleware_token, "")
+		#self.socket.send(post_request.encode('utf-8'))
+		#post_response = self.socket.recv(65535).decode('utf-8')
+		#print("POST RESPONSE: \n" + str(post_response))
+
+		# Set new CSRF token and session ID
+		csrf_token = re.search('Set-Cookie: csrftoken=(.*); expires', post_response).group(1)
+		sessionid = re.search('Set-Cookie: sessionid=(.*); expires', post_response).group(1)
+
+	#	next_location = re.search('Location: (.*)', post_response).group(1)
+
+		# Populate frontier with profiles on first Fakebook page
+
+#		post_request2 = self.post_request("/fakebook/", self.server, csrf_middleware_token, csrf_token, sessionid)
+#		self.socket.send(post_request2.encode('utf-8'))
+#		post_response2 = self.socket.recv(65535).decode('utf-8')
+#		print("POST RESPONSE 2: \n" + str(post_response2))
+#		sessionid = re.search('Set-Cookie: sessionid=(.*); expires', post_response2).group(1)
+
+#		post_request3 = self.post_request("/accounts/login/?next=/fakebook/", self.server, csrf_middleware_token, csrf_token, sessionid)		
+#		self.socket.send(post_request3.encode('utf-8'))
+#		post_response3 = self.socket.recv(65535).decode('utf-8')
+#		print("POST RESPONSE 3: \n" + str(post_response3))
+
+
+		get_frontier = "GET /fakebook/ HTTP/1.1\nHost: " + self.server + "\nCookie: csrftoken=" + csrf_token + "; sessionid=" +  sessionid + "\n\n"
+		self.log("SECOND GET REQUEST: \n" + str(get_frontier))
+		self.socket.send(get_frontier.encode('utf-8'))
+		get_frontier_response = self.socket.recv(65535).decode('utf-8')
+		print("GET FRONTIER RESPONSE: " + get_frontier_response)
+		#parser.feed(get_frontier_response)		
+		print("FRONTIER: " + str(frontier))
+
 
 	def run(self):
 		# Establish socket connection
@@ -98,7 +151,9 @@ class Crawler:
 		
 		# Log in to Fakebook
 		self.login()
-
+#		while ((len(frontier) != 0) and (len(flags) < 5)):
+			# Call GET on next url in frontier
+			
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='crawl Fakebook')
