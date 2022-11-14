@@ -32,7 +32,7 @@ class Parser(HTMLParser):
 
 	def handle_data(self, data):
 		global flags
-		if ('FLAG' in data):
+		if ('FLAG' in data) and (re.search('FLAG: (.*)', data).group(1) not in flags):
 			flags.append(re.search('FLAG: (.*)', data).group(1))
 			# When all flags are found, print them out and exit the program
 			if (len(flags) == 5):
@@ -99,6 +99,7 @@ class Crawler:
 		get_response = self.get_request("/accounts/login/?next=/fakebook/", "", "")
 
 		# Get the csrf token and sessionid
+		global csrf_token, sessionid
 		csrf_token = re.search('csrftoken=(.*); expires', get_response).group(1)
 		sessionid = re.search('sessionid=(.*); expires', get_response).group(1)
 
@@ -118,7 +119,7 @@ class Crawler:
 		get_frontier = self.get_request("/fakebook/", csrf_token, sessionid)
 		parser.feed(get_frontier)		
 		print("FRONTIER: " + str(frontier))
-
+		
 
 	def run(self):
 		# Establish socket connection
@@ -126,9 +127,15 @@ class Crawler:
 		
 		# Log in to Fakebook
 		self.login()
-#		while ((len(frontier) != 0) and (len(flags) < 5)):
+		parser = Parser()
+		while ((len(frontier) != 0) and (len(flags) < 6)):
+			crawled.append(frontier[0])
+			get_request = self.get_request(frontier[0], csrf_token, sessionid)
+			frontier.pop(0)
+			parser.feed(get_request)
+			print("================= FLAGS ===============" + str(flags))
 			# Call GET on next url in frontier
-			
+		print("FRONTIER IN RUN: " + str(frontier))			
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='crawl Fakebook')
