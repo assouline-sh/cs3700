@@ -16,18 +16,20 @@ flags = []
 class Parser(HTMLParser):
 	print("in parser")
 	def handle_starttag(self, tag, attrs):
-		global csrf_middleware_token, frontier
+		global csrf_middleware_token, frontier, crawled
+		attrs = dict(attrs)
 		print("TAG: " + str(tag))
 		print("ATTRS: " + str(attrs))
-		attrs = dict(attrs)
+
 		if (csrf_middleware_token == ""):
 			if ('name' in attrs) and (attrs['name'] == 'csrfmiddlewaretoken'):
 				csrf_middleware_token = attrs['value']
 				return
 		else:
-			if (tag == 'a') and ('href' in attrs) and (attrs['href'] not in crawled) and ('facebook' in attrs['href']):
+			if (tag == 'a') and ('href' in attrs) and (attrs['href'] not in crawled) and ('fakebook' in attrs['href']):
 				frontier.append(attrs['href'])
- 
+	
+
 	def handle_data(self, data):
 		global flags
 		if ('FLAG' in data):
@@ -95,11 +97,6 @@ class Crawler:
 	def login(self):
 		# GET HTML request the Fakebook login page and receive response from site
 		get_response = self.get_request("/accounts/login/?next=/fakebook/", "", "")
-		##"GET /accounts/login/?next=/fakebook/ HTTP/1.1\nHost: " + self.server + "\n\n" 
-		#self.socket.send(get_request.encode('utf-8'))
-		#get_response = self.socket.recv(65535).decode('utf-8')
-		#print("GET REQUEST: \n" + str(get_request))
-		#print("GET RESPONSE: \n" + str(get_response))
 
 		# Get the csrf token and sessionid
 		csrf_token = re.search('csrftoken=(.*); expires', get_response).group(1)
@@ -112,36 +109,14 @@ class Crawler:
 		
 		# POST HTML request to log in to the Fakebook site with given username and password
 		post_response = self.post_request("/accounts/login/", csrf_middleware_token, csrf_middleware_token, "")
-		#self.socket.send(post_request.encode('utf-8'))
-		#post_response = self.socket.recv(65535).decode('utf-8')
-		#print("POST RESPONSE: \n" + str(post_response))
 
 		# Set new CSRF token and session ID
 		csrf_token = re.search('Set-Cookie: csrftoken=(.*); expires', post_response).group(1)
 		sessionid = re.search('Set-Cookie: sessionid=(.*); expires', post_response).group(1)
 
-	#	next_location = re.search('Location: (.*)', post_response).group(1)
-
 		# Populate frontier with profiles on first Fakebook page
-
-#		post_request2 = self.post_request("/fakebook/", self.server, csrf_middleware_token, csrf_token, sessionid)
-#		self.socket.send(post_request2.encode('utf-8'))
-#		post_response2 = self.socket.recv(65535).decode('utf-8')
-#		print("POST RESPONSE 2: \n" + str(post_response2))
-#		sessionid = re.search('Set-Cookie: sessionid=(.*); expires', post_response2).group(1)
-
-#		post_request3 = self.post_request("/accounts/login/?next=/fakebook/", self.server, csrf_middleware_token, csrf_token, sessionid)		
-#		self.socket.send(post_request3.encode('utf-8'))
-#		post_response3 = self.socket.recv(65535).decode('utf-8')
-#		print("POST RESPONSE 3: \n" + str(post_response3))
-
-
-		get_frontier = "GET /fakebook/ HTTP/1.1\nHost: " + self.server + "\nCookie: csrftoken=" + csrf_token + "; sessionid=" +  sessionid + "\n\n"
-		self.log("SECOND GET REQUEST: \n" + str(get_frontier))
-		self.socket.send(get_frontier.encode('utf-8'))
-		get_frontier_response = self.socket.recv(65535).decode('utf-8')
-		print("GET FRONTIER RESPONSE: " + get_frontier_response)
-		#parser.feed(get_frontier_response)		
+		get_frontier = self.get_request("/fakebook/", csrf_token, sessionid)
+		parser.feed(get_frontier)		
 		print("FRONTIER: " + str(frontier))
 
 
