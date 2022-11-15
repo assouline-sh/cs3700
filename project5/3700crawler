@@ -39,8 +39,8 @@ class Parser(HTMLParser):
 			# When all flags are found, print them out and exit the program
 			if (len(flags) == 5):
 				for flag in flags:
-					print(flag + "\n")
-					exit(0)
+					print(flag)
+				exit(0)
 
 
 # Crawl the server site
@@ -60,7 +60,7 @@ class Crawler:
 
 
 	# Establish a TCP socket connection wrapped in TLS
-	def socket(self):
+	def open_socket(self):
 		mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		mysocket.connect((self.server, self.port))
 		context = ssl.create_default_context()
@@ -111,7 +111,7 @@ class Crawler:
 		csrf_token = re.search('Set-Cookie: csrftoken=(.*); expires', post_response).group(1)
 		sessionid = re.search('Set-Cookie: sessionid=(.*); expires', post_response).group(1)
 
-		# Populate frontier with profiles on first Fakebook page
+		# Add profile links on first Fakebook page to the frontier of pages to crawl
 		get_frontier = self.get_request("/fakebook/", csrf_token, sessionid)
 		parser.feed(get_frontier)		
 		
@@ -119,19 +119,30 @@ class Crawler:
 	# Run the web crawler
 	def run(self):
 		# Establish socket connection
-		self.socket = self.socket()
+		self.socket = self.open_socket()
 		
 		# Log in to Fakebook
 		self.login()
 		parser = Parser()
 
 		# Crawl through each Fakebook page in the frontier and not all flags have been found
-		while ((len(frontier) != 0) and (len(flags) < 6)):
+		while ((len(frontier) != 0) and (len(flags) < 5)):
 			crawled.append(frontier[0])
 			get_request = self.get_request(frontier[0], csrf_token, sessionid)
+			if ('302 - Found' in get_request):
+				frontier.pop(0)
+				next_location = re.search('Location: (.*)', get_response).group(1)
+				frontier.insert(0, next_location)
+				get_request = self.get_request(frontier[0], csrf_token, sessionid)
+			if ('403 - Forbidden' in get_request) or ('404 - Not Found' in get_request):
+				frontier.pop(0)
+				continue
+			if ('503 - Service Unavailable' in get_request):
+				continue
+			if ('Connection: close' in get_request):
+				self.socket = self.open_socket()
 			frontier.pop(0)
 			parser.feed(get_request)
-
 		for flag in flags:
 			print(flag)
 
