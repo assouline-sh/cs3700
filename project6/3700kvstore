@@ -8,8 +8,8 @@ state = "follower"										# When servers start up, they begin as followers
 term = 0
 election_timeout = random.randint(250, 350) / 1000		# Generally election timeout is ~300ms
 votes = 0
-log = []
-database = {}											# Store key-value pairs
+transaction_log = []
+state_machine = {}											# Store key-value pairs
 
 class Replica:
 	def __init__(self, port, id, others):
@@ -61,21 +61,35 @@ class Replica:
 			response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
 			self.send(response_fail)
 
-	# Increment the current term by one, transition to the candidate state, vote for yourself, and issue RequestVote RPCs to other servers
+	# Start an election by incrementing the current term by one, transitioning to the candidate state, voting for yourself, and issuing RequestVote RPCs to other servers
 	def send_request_vote_RPC(self):
+		global term, state, votes, transaction_log
 		term += 1
 		state = "candidate"
 		votes += 1
-		request_vote = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": term, "candidate_id": self.id, "last_log_index": len(log) - 1, "last_log_term": log[-1]['term']}
+		request_vote = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": term, "candidate_id": self.id, "last_log_index": len(transaction_log) - 1, "last_log_term": transaction_log[-1]['term']}
 		self.send(request_vote)
+
 
 	# Vote for a candidate if it has a higher last log term, or if the last log term is equal then vote for a candidate if it has a longer log
 	def receive_request_vote_RPC(self, message):
-		if (message['last_log_term'] > log[-1]['term']) or ((message['last_log_term'] == log[-1]['term']) and (message['last_log_index'] >= len(log) - 1)):
+		global transaction_log
+		if (message['last_log_term'] > transaction_log[-1]['term']) or ((message['last_log_term'] == transaction_log[-1]['term']) and (message['last_log_index'] >= len(transaction_log) - 1)):
 			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": True}
-		elif (message['last_log_term'] < log[-1]['term']) or ((message['last_log_term'] == log[-1]['term']) and (message['last_log_index'] < len(log) - 1)):
+		elif (message['last_log_term'] < transaction_log[-1]['term']) or ((message['last_log_term'] == transaction_log[-1]['term']) and (message['last_log_index'] < len(transaction_log) - 1)):
 			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": False}
 		self.send(vote)
+
+
+	def count_request_vote_RPC(self, message):
+		global votes
+		if (message['vote']):
+			votes += 1
+
+	
+	def send_append_entry_RPC(self):
+		global term,transaction_log
+		message = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": term, "entries": "", "prev_log_index": "", "prev_log_term": "", "leader_commit": ""}
 
 
 	def run(self):
