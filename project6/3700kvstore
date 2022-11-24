@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
-import argparse, socket, time, json, select, struct, sys, math, os
+import argparse, socket, time, json, select, struct, sys, math, os, random
 
 BROADCAST = "FFFF"
-leader_id = "FFFF"
-database = {}
-num_puts = 0
+leader = "FFFF"
+state = "follower"										# When servers start up, they begin as followers
+term = 0
+election_timeout = random.randint(250, 350) / 1000		# Generally election timeout is ~300ms
+votes = 0
+log = []
+database = {}											# Store key-value pairs
 
 class Replica:
 	def __init__(self, port, id, others):
@@ -26,32 +30,84 @@ class Replica:
 
 
 	def parse_message(self, msg):
-		print("REACHED PARSE MESSAGE")
-		print("SELF ID: " + str(self.id))
-		try:
-			if (msg['leader'] == BROADCAST):
-				if (msg['type'] == 'put'):
-					database.update({msg['key']: msg['value']})
-					put_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'] }
-					self.send(put_ok)
-					num_puts += 1
-					print("DATABASE: " + str(database))
-				if (msg['type'] == 'get'):
-					get_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'], "value": database[msg['key']] }
-					self.send(get_ok)
-			else:
-				response_redirect = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "redirect", "MID": msg['MID'] }
-				self.send(response_redirect)
-		except:
-			response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
+		global database
+		#try:
+			#if (msg['leader'] == BROADCAST):
+			#	print("IN LEADER IF")
+		if (msg['type'] == 'put'):
+			print("IN TYPE IF")
+			try:
+				#database.update({msg['key']: msg['value']})
+				put_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'] }
+				self.send(put_ok)
+				return msg['key'], msg['value']
+			except:
+				response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
+				self.send(response_fail)
+			#print("DATABASE: " + str(database))
+			print("===============================================================================")
+		elif (msg['type'] == 'get'):
+			try:
+				get_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'], "value": database[msg['key']] }
+				self.send(get_ok)
+			except:
+				response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
+				self.send(response_fail)
+			#else:
+			#	response_redirect = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "redirect", "MID": msg['MID'] }
+			#	self.send(response_redirect)
+		#except:
+		else:
+			response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
 			self.send(response_fail)
+
+	# Increment the current term by one, transition to the candidate state, vote for yourself, and issue RequestVote RPCs to other servers
+	def send_request_vote_RPC(self):
+		term += 1
+		state = "candidate"
+		votes += 1
+		request_vote = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": term, "candidate_id": self.id, "last_log_index": len(log) - 1, "last_log_term": log[-1]['term']}
+		self.send(request_vote)
+
+	# Vote for a candidate if it has a higher last log term, or if the last log term is equal then vote for a candidate if it has a longer log
+	def receive_request_vote_RPC(self, message):
+		if (message['last_log_term'] > log[-1]['term']) or ((message['last_log_term'] == log[-1]['term']) and (message['last_log_index'] >= len(log) - 1)):
+			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": True}
+		elif (message['last_log_term'] < log[-1]['term']) or ((message['last_log_term'] == log[-1]['term']) and (message['last_log_index'] < len(log) - 1)):
+			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": False}
+		self.send(vote)
+
 
 	def run(self):
 		while True:
-			data, addr = self.socket.recvfrom(65535)
-			msg = json.loads(data.decode('utf-8'))
-			print("RECEIVED MESSAGE: " + str(msg), flush=True)
-			self.parse_message(msg)
+			socks = select.select([self.socket], [], [], 0.1)[0]
+			for conn in socks:
+				data, addr = conn.recvfrom(65535)
+				msg = json.loads(data.decode('utf-8'))
+				print("OTHERS: " + str(self.others))
+				print("RECEIVED MESSAGE: " + str(msg), flush=True)
+
+				if (state != "leader"):
+					response_redirect = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "redirect", "MID": msg['MID'] }
+					self.send(response_redirect)
+				else:
+					response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
+					self.send(response_fail)
+#			try:
+#				if (msg['type'] == 'put'):
+#					database.update({msg['key']: msg['value']})
+#					put_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'] }
+#					self.send(put_ok)
+				#elif (msg['type'] == 'get'):
+				#	get_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'], "value": database[msg['key']] }
+				#	self.send(get_ok)
+#			except:
+#				response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
+#				self.send(response_fail)
+			
+#			print("DATABASE: " + str(database))
+			#self.parse_message(msg)
+			
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='run a key-value store')
