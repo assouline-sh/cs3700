@@ -4,11 +4,11 @@ import argparse, socket, time, json, select, struct, sys, math, os, random
 
 BROADCAST = "FFFF"
 leader = "FFFF"
-state = "follower"										# When servers start up, they begin as followers
+state = "follower"											# When servers start up, they begin as followers
 term = 0
-election_timeout = random.randint(250, 350) / 1000		# Generally election timeout is ~300ms
+election_timeout = random.randint(150, 300) / 1000			# Generally election timeout is 150ms - 300ms
 votes = 0
-transaction_log = []
+transaction_log = [{"buffer"}]								# Initialize log with a buffer, since log index should start from 1
 state_machine = {}											# Store key-value pairs
 
 class Replica:
@@ -30,36 +30,34 @@ class Replica:
 
 
 	def parse_message(self, msg):
-		global database
-		#try:
-			#if (msg['leader'] == BROADCAST):
-			#	print("IN LEADER IF")
-		if (msg['type'] == 'put'):
-			print("IN TYPE IF")
-			try:
-				#database.update({msg['key']: msg['value']})
-				put_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'] }
+		global transaction_log, term
+		if (state == "leader"):
+			if (msg['type'] == 'put'):
+				try:
+					state_machine.update({msg['key']: msg['value']})
+				except:
+					response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
+					self.send(response_fail)
+					return
+				transaction_log.append({"command": "put", "key": msg['key'], "value": msg['value'], "term": term})
+				# Send append entries to all replicas
+				put_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'] }
 				self.send(put_ok)
-				return msg['key'], msg['value']
-			except:
-				response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
-				self.send(response_fail)
-			#print("DATABASE: " + str(database))
-			print("===============================================================================")
-		elif (msg['type'] == 'get'):
-			try:
-				get_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'], "value": database[msg['key']] }
-				self.send(get_ok)
-			except:
-				response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
-				self.send(response_fail)
-			#else:
-			#	response_redirect = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "redirect", "MID": msg['MID'] }
-			#	self.send(response_redirect)
-		#except:
+			elif (msg['type'] == 'get'):
+				try:
+					value = state_machine.get(msg['key'])
+					if (value):
+						get_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'], "value": value }
+					else:
+						get_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'], "value": '' }
+					self.send(get_ok)
+				except:
+					response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
+					self.send(response_fail)
+					return
 		else:
-			response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
-			self.send(response_fail)
+			response_redirect = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "redirect", "MID": msg['MID'] }
+			self.send(response_redirect)
 
 	# Start an election by incrementing the current term by one, transitioning to the candidate state, voting for yourself, and issuing RequestVote RPCs to other servers
 	def send_request_vote_RPC(self):
@@ -73,22 +71,33 @@ class Replica:
 
 	# Vote for a candidate if it has a higher last log term, or if the last log term is equal then vote for a candidate if it has a longer log
 	def receive_request_vote_RPC(self, message):
-		global transaction_log
+		global transaction_log, term
 		if (message['last_log_term'] > transaction_log[-1]['term']) or ((message['last_log_term'] == transaction_log[-1]['term']) and (message['last_log_index'] >= len(transaction_log) - 1)):
-			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": True}
+			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": True, "term": term}
 		elif (message['last_log_term'] < transaction_log[-1]['term']) or ((message['last_log_term'] == transaction_log[-1]['term']) and (message['last_log_index'] < len(transaction_log) - 1)):
-			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": False}
+			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": False, "term": term}
 		self.send(vote)
 
 
 	def count_request_vote_RPC(self, message):
-		global votes
+		global votes, state, term, leader
+		if (message['term'] > term):
+			#something
+			return
 		if (message['vote']):
 			votes += 1
-
+		if (votes >= len(self.others) / 2):
+			leader = self.id
+			state = "leader"
+			votes = 0
+			# send a heartbeat
+		else:
+			state = "follower"
 	
-	def send_append_entry_RPC(self):
+
+	def send_append_entry_RPC(self, message):
 		global term,transaction_log
+
 		message = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": term, "entries": "", "prev_log_index": "", "prev_log_term": "", "leader_commit": ""}
 
 
