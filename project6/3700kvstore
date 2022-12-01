@@ -8,6 +8,7 @@ state = "follower"											# When servers start up, they begin as followers
 term = 0
 election_timeout = random.randint(150, 300) / 1000			# Generally election timeout is 150ms - 300ms
 votes = 0													# A replica's garnered votes during an election
+in_election = False
 transaction_log = [{"command": None, "key": None, "value": None, "term": 0}]								
 state_machine = {}											# Store key-value pairs
 leader_commit = 0											# Number of leader commits to state machine
@@ -69,11 +70,13 @@ class Replica:
 
 	# Start an election by incrementing the current term by one, transitioning to the candidate state, voting for yourself, and issuing RequestVote RPCs to other servers
 	def send_request_vote_RPC(self):
-		global term, votes, state, transaction_log
+		global term, votes, state, transaction_log, last_heartbeat, in_election
 		print("REQUESTING VOTES")
 		term += 1
 		state = "candidate"
 		votes = 1
+		in_election = True
+		last_heartbeat = time.time()
 		request_vote = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": term, "candidate_id": self.id, "last_log_index": len(transaction_log) - 1, "last_log_term": transaction_log[-1]['term']}
 		self.send(request_vote)
 
@@ -90,7 +93,7 @@ class Replica:
 
 
 	def count_request_vote_RPC(self, msg):
-		global votes, state, term, leader
+		global votes, state, term, leader, in_election
 		# If another server claims to be a leader and its term is greater than the candidate's current term,
 		# the candidate recognizes the leader as legitimate and returns to being a follower
 		if (msg['term'] > term) and (msg['src'] == msg['leader']):
@@ -104,6 +107,8 @@ class Replica:
 		if (votes >= len(self.others) / 2):
 			leader = self.id
 			state = "leader"
+			in_election = False
+			print(str(self.id) + " has become the leader")
 			#self.send_append_entry_RPC([])
 
 	
@@ -131,7 +136,8 @@ class Replica:
 			for conn in socks:
 				data, addr = conn.recvfrom(65535)
 				msg = json.loads(data.decode('utf-8'))
-				print("RECEIVED MESSAGE: " + str(msg))
+				if (msg['type'] != "append_entry"):
+					print("RECEIVED MESSAGE: " + str(msg))
 
 				# Parse "put" or "get" data messages
 				# If this machine is the leader, parse the received message, else redirect the message
@@ -153,7 +159,7 @@ class Replica:
 			# If this machine is a leader, send periodic heartbeats to all followers to maintain authority
 			if (state == "leader") and (time.time() - last_heartbeat > 0.1):
 				print("SENDING HEARTBEAT")
-				#self.send_append_entry_RPC([])
+				self.send_append_entry_RPC([])
 				last_heartbeat = time.time()
 				
 
