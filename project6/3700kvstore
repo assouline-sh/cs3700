@@ -7,11 +7,14 @@ leader = "FFFF"
 state = "follower"											# When servers start up, they begin as followers
 term = 0
 election_timeout = random.randint(150, 300) / 1000			# Generally election timeout is 150ms - 300ms
-votes = 0
-transaction_log = [{"buffer"}]								# Initialize log with a buffer, since log index should start from 1
+votes = 0													# A replica's garnered votes during an election
+transaction_log = [{"command": None, "key": None, "value": None, "term": 0}]								
 state_machine = {}											# Store key-value pairs
+leader_commit = 0											# Number of leader commits to state machine
+last_heartbeat = time.time()								# Initialize starting time
 
 class Replica:
+	# Initiate socket connection and send hello message to all replicas
 	def __init__(self, port, id, others):
 		self.port = port
 		self.id = id
@@ -19,117 +22,145 @@ class Replica:
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket.bind(('localhost', 0))
-
 		print("Replica %s starting up" % self.id, flush=True)
+
 		hello = { "src": self.id, "dst": BROADCAST, "leader": BROADCAST, "type": "hello" }
 		self.send(hello)
-		print("Sent hello message: %s" % hello, flush=True)
 
+
+	# Send message to given destination
 	def send(self, message):
 		self.socket.sendto(json.dumps(message).encode('utf-8'), ('localhost', self.port))
+		print("SENT " + str(message['type']) + " MESSAGE: " + str(message), flush = True)
 
 
 	def parse_message(self, msg):
-		global transaction_log, term
-		if (state == "leader"):
-			if (msg['type'] == 'put'):
-				try:
-					state_machine.update({msg['key']: msg['value']})
-				except:
-					response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
-					self.send(response_fail)
-					return
-				transaction_log.append({"command": "put", "key": msg['key'], "value": msg['value'], "term": term})
-				# Send append entries to all replicas
-				put_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'] }
-				self.send(put_ok)
-			elif (msg['type'] == 'get'):
-				try:
-					value = state_machine.get(msg['key'])
-					if (value):
-						get_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'], "value": value }
-					else:
-						get_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'], "value": '' }
-					self.send(get_ok)
-				except:
-					response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
-					self.send(response_fail)
-					return
-		else:
-			response_redirect = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "redirect", "MID": msg['MID'] }
-			self.send(response_redirect)
+		global transaction_log, term, leader_commit
+		if (msg['type'] == 'put'):
+			try:
+				# Put key-value pair in state machine
+				state_machine.update({msg['key']: msg['value']})
+			except:
+				response_fail = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID']}
+				self.send(response_fail)
+				return
+			# Log the "put" command for the given key and value in the transaction log
+			transaction_log.append({"command": "put", "key": msg['key'], "value": msg['value'], "term": term})
+			leader_commit += 1
+			# Respond with "ok" message to confirm "put" was successful
+			put_ok = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'] }
+			self.send(put_ok)
+			# Send append_entry responses to all replicas with new information about the log
+			#self.send_append_entry_RPC([{msg['key']: msg['value']}])
+		elif (msg['type'] == 'get'):
+			try:
+				# Get the value of the given key from the state machine if it exists
+				if msg['key'] in state_machine:
+					get_ok = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'], "value": state_machine.get(msg['key'])}
+				else:
+					get_ok = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'], "value": ''}
+			except:
+				response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
+				self.send(response_fail)
+				return
+			# Respond with the value if the key was found, or an empty value if no key was found
+			self.send(get_ok)
+
 
 	# Start an election by incrementing the current term by one, transitioning to the candidate state, voting for yourself, and issuing RequestVote RPCs to other servers
 	def send_request_vote_RPC(self):
-		global term, state, votes, transaction_log
+		global term, votes, state, transaction_log
+		print("REQUESTING VOTES")
 		term += 1
 		state = "candidate"
-		votes += 1
-		request_vote = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": term, "candidate_id": self.id, "last_log_index": len(transaction_log) - 1, "last_log_term": transaction_log[-1]['term']}
+		votes = 1
+		request_vote = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": term, "candidate_id": self.id, "last_log_index": len(transaction_log) - 1, "last_log_term": transaction_log[-1]['term']}
 		self.send(request_vote)
 
 
 	# Vote for a candidate if it has a higher last log term, or if the last log term is equal then vote for a candidate if it has a longer log
-	def receive_request_vote_RPC(self, message):
+	def receive_request_vote_RPC(self, msg):
 		global transaction_log, term
-		if (message['last_log_term'] > transaction_log[-1]['term']) or ((message['last_log_term'] == transaction_log[-1]['term']) and (message['last_log_index'] >= len(transaction_log) - 1)):
-			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": True, "term": term}
-		elif (message['last_log_term'] < transaction_log[-1]['term']) or ((message['last_log_term'] == transaction_log[-1]['term']) and (message['last_log_index'] < len(transaction_log) - 1)):
-			vote = { "src": self.id, "dst": message['src'], "leader": leader, "type": "cast_vote", "vote": False, "term": term}
+		print(str(self.id) + " is VOTING")
+		if (msg['last_log_term'] > transaction_log[-1]['term']) or ((msg['last_log_term'] == transaction_log[-1]['term']) and (msg['last_log_index'] >= len(transaction_log) - 1)):
+			vote = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "cast_vote", "vote": True, "term": term}
+		elif (msg['last_log_term'] < transaction_log[-1]['term']) or ((msg['last_log_term'] == transaction_log[-1]['term']) and (msg['last_log_index'] < len(transaction_log) - 1)):
+			vote = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "cast_vote", "vote": False, "term": term}
 		self.send(vote)
 
 
-	def count_request_vote_RPC(self, message):
+	def count_request_vote_RPC(self, msg):
 		global votes, state, term, leader
-		if (message['term'] > term):
-			#something
+		# If another server claims to be a leader and its term is greater than the candidate's current term,
+		# the candidate recognizes the leader as legitimate and returns to being a follower
+		if (msg['term'] > term) and (msg['src'] == msg['leader']):
+			leader = msg['src']
+			state = "follower"
 			return
-		if (message['vote']):
+		# If a vote is cast, count it
+		if (msg['vote']):
 			votes += 1
+		# If candidate has received majority of votes, it is the new leader
 		if (votes >= len(self.others) / 2):
 			leader = self.id
 			state = "leader"
-			votes = 0
-			# send a heartbeat
-		else:
-			state = "follower"
+			#self.send_append_entry_RPC([])
+
 	
 
-	def send_append_entry_RPC(self, message):
-		global term,transaction_log
+	def send_append_entry_RPC(self, entries):
+		global term, transaction_log
+		message = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": term, "entries": entries, "prev_log_index": len(transaction_log) - 1, "prev_log_term": transaction_log[len(transaction_log) - 1]['term'], "leader_commit": leader_commit}
+		self.send(message)
 
-		message = { "src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": term, "entries": "", "prev_log_index": "", "prev_log_term": "", "leader_commit": ""}
 
+	def receive_append_entry_RPC(self, msg):
+		global term, leader, state
+		if (state == "candidate"):
+			if (msg['term'] > term):
+				leader = msg['leader']
+				state = "follower"
+			else:
+				return
+		
 
 	def run(self):
+		global leader, last_heartbeat, election_timeout
 		while True:
 			socks = select.select([self.socket], [], [], 0.1)[0]
 			for conn in socks:
 				data, addr = conn.recvfrom(65535)
 				msg = json.loads(data.decode('utf-8'))
-				print("OTHERS: " + str(self.others))
-				print("RECEIVED MESSAGE: " + str(msg), flush=True)
+				print("RECEIVED MESSAGE: " + str(msg))
 
-				if (state != "leader"):
+				# Parse "put" or "get" data messages
+				# If this machine is the leader, parse the received message, else redirect the message
+				if (msg['type'] == "put" or msg['type'] == "get") and (state == "leader"):
+					self.parse_message(msg)
+				elif (msg['type'] == "put" or msg['type'] == "get") and (state != "leader"):
 					response_redirect = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "redirect", "MID": msg['MID'] }
 					self.send(response_redirect)
-				else:
-					response_fail = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "fail", "MID": msg['MID'] }
-					self.send(response_fail)
-#			try:
-#				if (msg['type'] == 'put'):
-#					database.update({msg['key']: msg['value']})
-#					put_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'] }
-#					self.send(put_ok)
-				#elif (msg['type'] == 'get'):
-				#	get_ok = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "ok", "MID": msg['MID'], "value": database[msg['key']] }
-				#	self.send(get_ok)
-#			except:
-#				response_fail = { "src": self.id, "dst": msg['src'], "leader": BROADCAST, "type": "fail", "MID": msg['MID'] }
-#				self.send(response_fail)
-			
-#			print("DATABASE: " + str(database))
-			#self.parse_message(msg)
+
+				# Parse messages relating to elections
+				# Determine whether or not to cast a vote
+				if (msg['type'] == "request_vote"):
+					self.receive_request_vote_RPC(msg)
+
+				# Count received vote to determine if a new leader has been elected
+				if (msg['type'] == "cast_vote"):
+					self.count_request_vote_RPC(msg)
+
+			# If this machine is a leader, send periodic heartbeats to all followers to maintain authority
+			if (state == "leader") and (time.time() - last_heartbeat > 0.1):
+				print("SENDING HEARTBEAT")
+				#self.send_append_entry_RPC([])
+				last_heartbeat = time.time()
+				
+
+			# If this machine is a follower and has not received a valid RPC during the election timeout period, start election
+			if (state == "follower") and (time.time() - last_heartbeat > election_timeout):
+				print("STARTING ELECTION")
+				self.send_request_vote_RPC()	
 			
 
 if __name__ == "__main__":
