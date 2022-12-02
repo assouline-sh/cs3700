@@ -7,11 +7,12 @@ state = "follower"															# When servers start up, they begin as follower
 state_machine = {}															# Store key-value pairs
 votes = 0																	# A replica's garnered votes during an election
 last_heartbeat = time.time()												# Initialize starting time
+in_election = False
 election_timeout = random.randint(150, 300) / 1000
 # Persistent state on all servers
 current_term = 0
 voted_for = None															# Candidate ID that received vote in current term
-log = [{"command": None, "key": None, "value": None, "term": None}]			# Starts at index 1, so initialize with buffer for index 0								
+log = [{"command": None, "key": None, "value": None, "term": 0}]			# Starts at index 1, so initialize with buffer for index 0								
 # Volatile state on all servers
 commit_index = 0															# Index of highest log entry known to be commited
 last_applied = 0 															# Index of highest log entry applied to state machine
@@ -65,6 +66,7 @@ class Replica:
 			put_ok = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "ok", "MID": msg['MID'] }
 			self.send(put_ok)
 			# Send append_entry responses to all replicas with new information about the log
+			# ! need to call append entry before we add to log
 			self.send_append_entry_RPC([{msg['key']: msg['value']}])
 			
 		elif (msg['type'] == 'get'):
@@ -84,20 +86,26 @@ class Replica:
 
 	# Start an election by incrementing the current term by one, transitioning to the candidate state, voting for yourself, and issuing RequestVote RPCs to other servers
 	def send_request_vote_RPC(self):
-		global current_term, state, votes, last_heartbeat, log, election_timeout
+		global current_term, state, votes, last_heartbeat, log, election_timeout, in_election
 		print(str(self.id) + " IS REQUESTING VOTES")
 		current_term += 1
 		state = "candidate"
 		votes = 1
 		election_timeout = self.get_election_timeout()
+		last_heartbeat = time.time()
+		in_election = True
 		request_vote = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": current_term, "candidate_id": self.id, "last_log_index": len(log) - 1, "last_log_term": log[-1]['term']}
 		self.send(request_vote)
 
 
 	# Vote for a candidate if it has a higher last log term, or if the last log term is equal then vote for a candidate if it has a longer log
 	def receive_request_vote_RPC(self, msg):
-		global voted_for, log, current_term
+		global voted_for, log, current_term, state
 		print(str(self.id) + " is VOTING")
+		if (msg['term'] > current_term):
+			current_term = msg['term']
+			state = "follower"
+
 		if (voted_for == None) or (voted_for == msg['candidate_id']):
 			if (msg['last_log_term'] > log[-1]['term']) or ((msg['last_log_term'] == log[-1]['term']) and (msg['last_log_index'] >= len(log) - 1)):
 				vote = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "cast_vote", "vote": True, "term": current_term, "candidate_id": msg['candidate_id']}
@@ -109,8 +117,12 @@ class Replica:
 
 	# Count the number of votes from other replicas to determine if candidate is the new leader
 	def count_request_vote_RPC(self, msg):
-		global votes, state, leader, next_index, match_index
-		if (self.id == msg['candidate-id']):
+		global votes, state, leader, next_index, match_index, current_term, in_election, last_heartbeat
+		if (msg['term'] > current_term):
+			current_term = msg['term']
+			state = "follower"
+
+		if (self.id == msg['candidate_id']):
 			# If a vote is cast, count it
 			if (msg['vote']):
 				votes += 1
@@ -118,8 +130,10 @@ class Replica:
 			if (votes >= math.ceil(len(self.others) / 2)):
 				leader = self.id
 				state = "leader"
+				in_election = False
 				print(str(self.id) + " has become the leader")
 				self.send_append_entry_RPC([])
+				last_heartbeat = time.time()
 				next_index = {}
 				match_index = {}
 				for replica in self.others:
@@ -129,13 +143,17 @@ class Replica:
 
 	# Send a message from leader to replicate log entries to other replicas or to send a heartbeat that maintains authority
 	def send_append_entry_RPC(self, entries):
-		global current_term, log, last_heartbeat
-		append_entry = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": current_term, "entries": entries, "prev_log_index": len(log) - 2, "prev_log_term": log[-2]['term'], "leader_commit": commit_index}
+		global current_term, log, last_heartbeat, leader
+		append_entry = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": current_term, "entries": entries, "prev_log_index": len(log) - 1, "prev_log_term": log[-1]['term'], "leader_commit": commit_index}
 		self.send(append_entry)
 
 
 	def receive_append_entry_RPC(self, msg):
 		global current_term, leader, state, commit_index, log
+		if (msg['term'] > current_term):
+			current_term = msg['term']
+			state = "follower"
+
 		# No need to respond to heartbeat messages
 		if not (msg['entries']):
 			return
@@ -144,14 +162,14 @@ class Replica:
 			if (msg['term'] > current_term):
 				leader = msg['leader']
 				state = "follower"
-			else:
-				return
+			return
 	
 		# Return False if follower's log is inconsistent with the leader's log
-		if (msg['term'] < current_term) or (log[msg['prev_log_index']]['term'] != msg['prev_log_term']):
-			append_entry_response = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "append_entry_response", "term": current_term, "success": False}
-			self.send(append_entry_response)
-			return
+		if (len(log) > msg['prev_log_index']):
+			if (msg['term'] < current_term) or (log[msg['prev_log_index']]['term'] != msg['prev_log_term']):
+				append_entry_response = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "append_entry_response", "term": current_term, "success": False}
+				self.send(append_entry_response)
+				return
 
 		# If an existing entry conflicts, delete the existing entry and all that follow it
 		if (len(log) > msg['prev_log_index'] + 1):
@@ -170,23 +188,28 @@ class Replica:
 		self.send(append_entry_response)
 
 		
+	def receive_append_entry_response_RPC(self, msg):
+		global current_term, state
+		if (msg['term'] > current_term):
+			current_term = msg['term']
+			state = "follower"
 
-
+		if (not msg['success']):
+			return
 
 		
 	def run(self):
-		global leader, last_heartbeat, election_timeout
+		global leader, last_heartbeat, election_timeout, in_election
 		while True:
 			socks = select.select([self.socket], [], [], 0.1)[0]
 			for conn in socks:
 				data, addr = conn.recvfrom(65535)
 				msg = json.loads(data.decode('utf-8'))
 				# ! Temporary for clearing debug
-				if (msg['type'] != "append_entry"):
-					print("RECEIVED MESSAGE: " + str(msg))
+				#if (msg['type'] != "append_entry"):
+				#	print("RECEIVED MESSAGE: " + str(msg))
 
 				# Parse "put" or "get" data messages
-				# If this machine is the leader, parse the received message, else redirect the message
 				if (msg['type'] == "put" or msg['type'] == "get") and (state == "leader"):
 					self.parse_message(msg)
 				elif (msg['type'] == "put" or msg['type'] == "get") and (state != "leader"):
@@ -195,15 +218,14 @@ class Replica:
 
 				# Parse append messages
 				if (msg['type'] == "append_entry"):
-					self.receive_append_entry_RPC()
+					self.receive_append_entry_RPC(msg)
+				elif (msg['type'] == "append_entry_response") and (state == "leader"):
+					self.receive_append_entry_response_RPC(msg)
 
 				# Parse messages relating to elections
-				# Determine whether or not to cast a vote
 				if (msg['type'] == "request_vote"):
 					self.receive_request_vote_RPC(msg)
-
-				# Count received vote to determine if a new leader has been elected
-				if (msg['type'] == "cast_vote"):
+				elif (msg['type'] == "cast_vote"):
 					self.count_request_vote_RPC(msg)
 
 			# If this machine is a leader, send periodic heartbeats to all followers to maintain authority
@@ -213,7 +235,7 @@ class Replica:
 				last_heartbeat = time.time()
 				
 			# If this machine is a follower and has not received a valid RPC within the election timeout period, start election
-			if (state == "follower") and (time.time() - last_heartbeat > election_timeout):
+			if (state == "follower") and (time.time() - last_heartbeat > election_timeout) and (not in_election):
 				print("STARTING ELECTION")
 				self.send_request_vote_RPC()	
 			
