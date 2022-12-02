@@ -89,11 +89,9 @@ class Replica:
 		current_term += 1
 		state = "candidate"
 		votes = 1
-		#last_heartbeat = time.time()
+		election_timeout = self.get_election_timeout()
 		request_vote = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "request_vote", "term": current_term, "candidate_id": self.id, "last_log_index": len(log) - 1, "last_log_term": log[-1]['term']}
 		self.send(request_vote)
-		# Restart randomized election timeout at start of an election
-		election_timeout = self.get_election_timeout()
 
 
 	# Vote for a candidate if it has a higher last log term, or if the last log term is equal then vote for a candidate if it has a longer log
@@ -132,27 +130,50 @@ class Replica:
 	# Send a message from leader to replicate log entries to other replicas or to send a heartbeat that maintains authority
 	def send_append_entry_RPC(self, entries):
 		global current_term, log, last_heartbeat
-		message = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": current_term, "entries": entries, "prev_log_index": len(log) - 2, "prev_log_term": log[-2]['term'], "leader_commit": commit_index}
-		self.send(message)
-		last_heartbeat = time.time()
+		append_entry = {"src": self.id, "dst": BROADCAST, "leader": leader, "type": "append_entry", "term": current_term, "entries": entries, "prev_log_index": len(log) - 2, "prev_log_term": log[-2]['term'], "leader_commit": commit_index}
+		self.send(append_entry)
 
 
 	def receive_append_entry_RPC(self, msg):
-		global current_term, leader, state
-		if (state == "candidate"):
+		global current_term, leader, state, commit_index, log
+		# No need to respond to heartbeat messages
+		if not (msg['entries']):
+			return
+		# If in an election and an append entry RPC is received from a new leader, convert to follower
+		if (state == "candidate") and (msg['src'] == msg['leader']):
 			if (msg['term'] > current_term):
 				leader = msg['leader']
 				state = "follower"
 			else:
 				return
-		# If another server claims to be a leader and its term is greater than the candidate's current term,
-		# the candidate recognizes the leader as legitimate and returns to being a follower
-		if (msg['term'] > current_term) and (msg['src'] == msg['leader']):
-			leader = msg['src']
-			state = "follower"
+	
+		# Return False if follower's log is inconsistent with the leader's log
+		if (msg['term'] < current_term) or (log[msg['prev_log_index']]['term'] != msg['prev_log_term']):
+			append_entry_response = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "append_entry_response", "term": current_term, "success": False}
+			self.send(append_entry_response)
 			return
+
+		# If an existing entry conflicts, delete the existing entry and all that follow it
+		if (len(log) > msg['prev_log_index'] + 1):
+			for i in range(msg['prev_log_index'] + 1, len(log)):
+				del log[i]
+		# Append any new entries not already in the log
+		for entry in msg['entries']:
+			log.append({"command": "put", "key": list(entry.keys())[0], "value": list(entry.values())[0], "term": current_term})
+		
+		# Update the commit index
+		if (msg['leader_commit'] > commit_index):
+			commit_index = math.min(msg['leader_commit'], len(log) - 1)
+
+		# Return True if appending entries was successful
+		append_entry_response = {"src": self.id, "dst": msg['src'], "leader": leader, "type": "append_entry_response", "term": current_term, "success": True}
+		self.send(append_entry_response)
+
 		
 
+
+
+		
 	def run(self):
 		global leader, last_heartbeat, election_timeout
 		while True:
@@ -171,6 +192,10 @@ class Replica:
 				elif (msg['type'] == "put" or msg['type'] == "get") and (state != "leader"):
 					response_redirect = { "src": self.id, "dst": msg['src'], "leader": leader, "type": "redirect", "MID": msg['MID'] }
 					self.send(response_redirect)
+
+				# Parse append messages
+				if (msg['type'] == "append_entry"):
+					self.receive_append_entry_RPC()
 
 				# Parse messages relating to elections
 				# Determine whether or not to cast a vote
