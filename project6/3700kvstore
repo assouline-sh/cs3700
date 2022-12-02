@@ -199,7 +199,7 @@ class Replica:
 
 		
 	def run(self):
-		global leader, last_heartbeat, election_timeout, in_election
+		global leader, last_heartbeat, election_timeout, in_election, state
 		while True:
 			socks = select.select([self.socket], [], [], 0.1)[0]
 			for conn in socks:
