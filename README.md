@@ -10,4 +10,8 @@ Over the course, we worked on six projects.
 
 **Project 3**: BGP Router
 
-**Project 4**:
+**Project 4**: Reliable Transport Protocol
+
+**Project 5**: Web Crawler
+
+**Project 6**: Distributed Key-Value Database
